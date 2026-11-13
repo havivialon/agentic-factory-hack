@@ -27,13 +27,15 @@ public class LeakOpsAgentRuntime(AIProjectClient project, AgentSettings settings
         var stopwatch = Stopwatch.StartNew();
 
         // "await using" = Python's "async with": the MCP connection is closed when the method ends.
-        await using var mcp = await ConnectMcpAsync(cancellationToken);
-        var available = await mcp.ListToolsAsync(cancellationToken: cancellationToken);
-        var tools = spec.AllowedTools
-            .Select(name => available.FirstOrDefault(t => t.Name == name)
-                ?? throw new InvalidOperationException($"MCP tool '{name}' needed by {spec.Name} is not offered by {settings.McpServerUrl}."))
-            .Cast<AITool>()
-            .ToList();
+        // An agent without tools (Communications) never opens a connection; a null resource is simply skipped.
+        await using var mcp = spec.AllowedTools.Count > 0 ? await ConnectMcpAsync(cancellationToken) : null;
+        var tools = new List<AITool>();
+        if (mcp is not null)
+        {
+            var available = await mcp.ListToolsAsync(cancellationToken: cancellationToken);
+            tools.AddRange(spec.AllowedTools.Select(name => available.FirstOrDefault(t => t.Name == name)
+                ?? throw new InvalidOperationException($"MCP tool '{name}' needed by {spec.Name} is not offered by {settings.McpServerUrl}.")));
+        }
 
         // Code-defined Foundry agent: no server-side agent resource is created, the app owns model, instructions and tools.
         AIAgent agent = project

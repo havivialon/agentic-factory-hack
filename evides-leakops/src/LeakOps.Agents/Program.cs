@@ -26,8 +26,10 @@ builder.Services.AddSingleton(sp =>
 
     return new AIProjectClient(new Uri(settings.ProjectEndpoint), credential);
 });
+builder.Services.AddHttpClient<WaterstoringClient>(client => client.Timeout = TimeSpan.FromSeconds(30));
 builder.Services.AddSingleton<LeakOpsAgentRuntime>();
 builder.Services.AddSingleton<TriageAgent>();
 builder.Services.AddSingleton<DiagnosticAgent>();
+builder.Services.AddSingleton<CommunicationsAgent>();
 
 builder.Build().Run();

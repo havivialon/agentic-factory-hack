@@ -69,9 +69,12 @@ public record DiagnosticReport(
     DateTimeOffset TriggeredAtUtc,
     string SegmentId,
     string Street,
+    string Place,
+    IReadOnlyList<string> ServedStreets,
     double ChainageM,
     double UncertaintyM,
     GeoPoint Location,
+    IReadOnlyList<GeoPoint> SegmentPath,   // start and end of the pipe segment, to draw it on a map
     string Material,
     int DiameterMm,
     int InstallYear,
@@ -91,3 +94,26 @@ public record DiagnosticReport(
     IReadOnlyList<string> Warnings,        // every correction or gap the rules found in the model's answer
     bool NeedsReview,                      // true when a person should check the diagnosis before anyone is sent out
     IReadOnlyList<string> ReviewReasons);
+
+// ---- Communications agent ---------------------------------------------------------------------------------------
+
+/// <summary>Input of the Communications agent: the diagnosis. A report that needs review is not published.</summary>
+public record CommunicationsRequest(DiagnosticReport Report);
+
+/// <summary>What the model writes for residents, in Dutch and English. Nothing else: all facts are added by code.</summary>
+public record PublicNotice(
+    string TitleNl,
+    string MessageNl,
+    string AdviceNl,
+    string TitleEn,
+    string MessageEn,
+    string AdviceEn);
+
+/// <summary>Outcome of the Communications step.</summary>
+public record CommunicationsResult(
+    string IncidentId,
+    PublicNotice Notice,
+    bool UsedFallbackText,                 // true when the model's draft was rejected twice and the safe template was published instead
+    IReadOnlyList<string> RejectedDraftIssues,
+    WaterstoringIncident Published,
+    string PublicUrl);

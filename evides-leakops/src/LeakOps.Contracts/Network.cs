@@ -35,6 +35,8 @@ public record PipeSegment(
     string Id,
     string DistrictId,
     string Street,
+    string Place,                      // town or village, shown to residents
+    IReadOnlyList<string> ServedStreets,   // public street names the segment supplies, for residents
     string Material,           // cast_iron | ductile_iron | pvc | pe | asbestos_cement | steel
     int DiameterMm,
     int InstallYear,
