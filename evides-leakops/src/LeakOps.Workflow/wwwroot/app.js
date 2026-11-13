@@ -1,0 +1,215 @@
+"use strict";
+
+// Operator console: pick an alarm, run the workflow, watch six agents work. Progress arrives as server-sent events over a POST.
+const ROLES = {
+  triage: ["Triage", "Is it a real leak? Reads sensors, planned works, weather and usage."],
+  diagnostic: ["Diagnostic", "Where is it and how bad? Uses GIS data: pipe, position, severity, valves."],
+  communications: ["Communications", "Tells residents in Dutch and English and publishes to Waterstoring."],
+  matchmaker: ["Resource Matchmaker", "Finds the nearest available technician with the right certifications."],
+  procurement: ["Procurement", "Reserves parts and equipment, orders what is short."],
+  scheduling: ["Scheduling", "Plans the route, sends the work order, updates the expected time."],
+};
+const ORDER = Object.keys(ROLES);
+const OUTCOME_TEXT = {
+  completed: "Done: the leak is handled from alarm to work order.",
+  closed_false_alarm: "Closed: no leak, so nothing else was started.",
+  needs_review: "Stopped: a person has to decide.",
+  failed: "Failed: an agent could not do its job.",
+};
+
+const $ = (id) => document.getElementById(id);
+const stepEls = {};
+let running = false;
+let timer = null;
+
+function el(tag, attrs = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [key, value] of Object.entries(attrs)) {
+    if (key === "class") node.className = value;
+    else node.setAttribute(key, value);
+  }
+  for (const child of children) node.append(child);
+  return node;
+}
+
+function buildSteps() {
+  const list = $("steps");
+  list.replaceChildren();
+  ORDER.forEach((step, i) => {
+    const [name, role] = ROLES[step];
+    const li = el("li", { class: "step waiting", id: `step-${step}` },
+      el("div", { class: "badge" }, String(i + 1)),
+      el("div", {}, el("h4", {}, name), el("div", { class: "role" }, role)),
+      el("div", { class: "status" }, "Waiting"),
+      el("div", { class: "headline" }, ""));
+    list.append(li);
+    stepEls[step] = li;
+  });
+}
+
+function setStep(step, state, statusText, headline) {
+  const li = stepEls[step];
+  li.className = `step ${state}`;
+  li.querySelector(".status").textContent = statusText;
+  if (headline !== undefined) li.querySelector(".headline").textContent = headline;
+}
+
+function addDetails(step, data) {
+  const li = stepEls[step];
+  li.querySelector("details")?.remove();
+  const trace = data?.trace;
+  const details = el("details", {}, el("summary", {}, "Details"));
+  if (trace) {
+    const calls = (trace.toolCalls || []).filter((c) => !c.name.startsWith("(rules)")).map((c) => c.name);
+    const checks = (trace.toolCalls || []).filter((c) => c.name.startsWith("(rules)")).map((c) => c.name.replace("(rules) ", ""));
+    const parts = [`${trace.model || "model"}`, `${(trace.durationMs / 1000).toFixed(1)} s`];
+    if (trace.inputTokens != null) parts.push(`${trace.inputTokens} tokens in, ${trace.outputTokens} out`);
+    details.append(el("div", { class: "trace" }, parts.join(" - ")));
+    if (calls.length) details.append(el("div", { class: "trace" }, "Tools the agent used: " + calls.join(", ")));
+    if (checks.length) details.append(el("div", { class: "trace" }, "Facts fetched by code to check it: " + [...new Set(checks)].join(", ")));
+  }
+  details.append(el("pre", {}, JSON.stringify(data?.result ?? data, null, 2)));
+  li.append(details);
+}
+
+function showBanner(summary, reasons) {
+  const banner = $("banner");
+  banner.hidden = false;
+  banner.className = `banner ${summary.outcome}`;
+  banner.replaceChildren(el("div", {}, OUTCOME_TEXT[summary.outcome] || summary.outcome));
+  const extra = [`${(summary.totalMs / 1000).toFixed(0)} s`];
+  if (summary.incidentId) extra.push(`incident ${summary.incidentId}`);
+  if (summary.workOrderId) extra.push(`work order ${summary.workOrderId}`);
+  banner.append(el("small", {}, extra.join(" - ")));
+  if (reasons?.length) banner.append(el("ul", {}, ...reasons.map((r) => el("li", {}, r))));
+}
+
+function startTimer(step) {
+  stopTimer();
+  const started = Date.now();
+  const status = stepEls[step].querySelector(".status");
+  timer = setInterval(() => { status.textContent = `Working ${Math.floor((Date.now() - started) / 1000)} s`; }, 500);
+}
+function stopTimer() { if (timer) { clearInterval(timer); timer = null; } }
+
+function handle(type, event) {
+  switch (type) {
+    case "step_started":
+      setStep(event.step, "running", "Working 0 s", "");
+      startTimer(event.step);
+      break;
+    case "step_completed":
+      stopTimer();
+      setStep(event.step, "completed", `Done in ${(event.durationMs / 1000).toFixed(1)} s`, event.headline);
+      addDetails(event.step, event.data);
+      break;
+    case "step_failed":
+      stopTimer();
+      setStep(event.step, "failed", "Failed", event.headline);
+      break;
+    case "run_completed": {
+      stopTimer();
+      const done = new Set((event.summary?.steps || []).map((s) => s.step));
+      ORDER.filter((s) => !done.has(s)).forEach((s) => setStep(s, "skipped", "Not run", ""));
+      showBanner(event.summary, event.reasons);
+      break;
+    }
+  }
+}
+
+async function readEvents(response) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let cut;
+    while ((cut = buffer.indexOf("\n\n")) >= 0) {
+      const block = buffer.slice(0, cut);
+      buffer = buffer.slice(cut + 2);
+      const type = /^event: (.*)$/m.exec(block)?.[1];
+      const data = /^data: (.*)$/m.exec(block)?.[1];
+      if (type && data) handle(type, JSON.parse(data));
+    }
+  }
+}
+
+function showError(message) {
+  const box = $("run-error");
+  box.textContent = message;
+  box.hidden = false;
+}
+
+async function run() {
+  if (running) return;
+  $("run-error").hidden = true;
+  let alarm;
+  try { alarm = JSON.parse($("alarm").value); }
+  catch (e) { return showError("The alarm is not valid JSON: " + e.message); }
+
+  running = true;
+  $("run").disabled = true;
+  $("run").textContent = "Running...";
+  $("banner").hidden = true;
+  buildSteps();
+  try {
+    const response = await fetch("api/runs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ alarm }) });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new Error(body.error || `The workflow host answered ${response.status}.`);
+    }
+    await readEvents(response);
+  } catch (e) {
+    stopTimer();
+    showError(e.message);
+  } finally {
+    running = false;
+    $("run").disabled = false;
+    $("run").textContent = "Run the workflow again";
+    loadRecent();
+  }
+}
+
+function pickScenario(scenario, button) {
+  document.querySelectorAll(".scenario").forEach((b) => b.setAttribute("aria-checked", String(b === button)));
+  $("alarm").value = JSON.stringify(scenario.alarm, null, 2);
+}
+
+async function loadScenarios() {
+  const scenarios = await (await fetch("api/scenarios")).json();
+  const box = $("scenarios");
+  box.replaceChildren();
+  scenarios.forEach((scenario, i) => {
+    const button = el("button", { class: "scenario", type: "button", role: "radio", "aria-checked": "false" },
+      el("strong", {}, scenario.name), el("span", {}, scenario.description));
+    button.addEventListener("click", () => pickScenario(scenario, button));
+    box.append(button);
+    if (i === 0) pickScenario(scenario, button);
+  });
+  $("run").disabled = scenarios.length === 0;
+}
+
+async function loadRecent() {
+  const runs = await (await fetch("api/runs")).json();
+  const list = $("recent");
+  list.replaceChildren();
+  if (!runs.length) return list.append(el("li", { class: "muted" }, "None yet."));
+  runs.slice(0, 6).forEach((r) => list.append(el("li", {},
+    el("span", {}, `${r.alarmId} - ${r.outcome.replaceAll("_", " ")}`),
+    el("span", { class: "muted" }, `${Math.round(r.totalMs / 1000)} s`))));
+}
+
+async function loadConfig() {
+  try {
+    const config = await (await fetch("api/config")).json();
+    $("site-link").href = config.waterstoringUrl;
+  } catch { /* keep the default link */ }
+}
+
+buildSteps();
+$("run").addEventListener("click", run);
+loadScenarios().catch((e) => showError("Could not load the scenarios: " + e.message));
+loadRecent();
+loadConfig();

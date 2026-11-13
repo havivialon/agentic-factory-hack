@@ -21,8 +21,8 @@ All data is **simulated**. The Waterstoring site in this folder is a **fake**, n
 | `src/LeakOps.Mcp` | Azure Functions app exposing the MCP tools |
 | `src/LeakOps.Agents` | Azure Functions app with the six agent HTTP functions |
 | `src/LeakOps.Waterstoring` | Fake Waterstoring.nl (ingest API + public map) |
-| `src/LeakOps.Workflow` | ASP.NET workflow host (sequential pipeline, SSE, trigger page) |
-| `src/LeakOps.AppHost` | Aspire AppHost for local runs |
+| `src/LeakOps.Workflow` | ASP.NET workflow host: runs the six agents in order, streams progress (SSE), operator console |
+| `src/LeakOps.AppHost` | Aspire AppHost: starts everything locally with one command |
 | `tests/LeakOps.Tests` | Unit tests |
 
 ## Local ports
@@ -254,5 +254,43 @@ curl -X POST http://localhost:7072/api/agents/triage -H "Content-Type: applicati
 Credentials: in Azure the app's managed identity is used; locally the Azure CLI (pinned to `AZURE_TENANT_ID`). Settings:
 `AZURE_AI_PROJECT_ENDPOINT`, `MODEL_DEPLOYMENT_NAME` (default `gpt-5.4`), `MCP_SERVER_URL`, `MCP_AUTH_KEY`, `AZURE_TENANT_ID`.
 
+## Workflow host and operator console (`src/LeakOps.Workflow`)
+The workflow host runs the six agents in order for one alarm and streams the progress to a browser page. It only orchestrates: it
+calls the HTTP functions of the Agents app (`AGENTS_BASE_URL`, `AGENTS_FUNCTION_KEY` when deployed) and never touches data.
+`Contracts/Logic/WorkflowRunner.cs` holds the pipeline (it works against an `IAgentGateway`, so the unit tests use a fake):
+
+| Situation | Result |
+|---|---|
+| Triage says `false_alarm` | `closed_false_alarm`: the run ends after step 1, nothing is published or booked |
+| Triage is `uncertain`, or any agent says `needsReview` (diagnosis, no technician, package cannot be equipped) | `needs_review`: the run stops there with the reasons; a note says when residents were already informed |
+| An agent errors, times out or is blocked by the content filter | `failed`: the run says which step and why (the host never throws) |
+| All six agents finish | `completed` with incident id, work order id and the expected resolution time |
+
+Every agent is idempotent, so an operator simply runs the same alarm again after a failure or after fixing the cause.
+
+| Endpoint | What it does |
+|---|---|
+| `GET /` | The operator console: pick a scenario (or edit the alarm), run it, watch the six steps, open each answer with its trace |
+| `GET /api/scenarios` | The scenarios with their alarms (never the hidden ground truth of the simulation) |
+| `POST /api/runs` `{ "scenarioId": ... }` or `{ "alarm": {...} }` | Runs the workflow and streams server-sent events: `run_started`, `step_started`, `step_completed` (with the agent's answer and trace), `step_failed`, `run_completed` |
+| `POST /api/runs?wait=true` | Same, but waits and returns the run summary as JSON (for scripts) |
+| `GET /api/runs`, `GET /api/runs/{id}` | The last 25 runs (in memory) |
+
+A run keeps going when the browser tab is closed, so a half-booked incident is never left behind.
+
+### Run everything with one command (Aspire)
+`LeakOps.AppHost` starts Azurite, the MCP and Agents function apps (`func start`), the fake Waterstoring site and the workflow host,
+waits until Azurite really listens, passes the settings on and shows everything in the Aspire dashboard
+(http://localhost:15888, the login link is printed on start). It reads `COSMOS_ENDPOINT`, `COSMOS_KEY` and `AZURE_AI_PROJECT_ENDPOINT`
+from the environment or the repo-root `.env` (the key is a masked parameter and is never written to a file).
+```powershell
+$env:AZURE_TENANT_ID = "<tenant-id>"; $env:AZURE_CONFIG_DIR = "$HOME\.azure-macaw"   # only when the Foundry project is not in your default az tenant
+dotnet run --project evides-leakops\src\LeakOps.AppHost
+```
+Then open http://localhost:5090 (operator console) and http://localhost:5080/evides (what residents see). Reservations and orders
+stay in Cosmos between runs; clear them with `dotnet run --project evides-leakops\src\LeakOps.Seeder -- --reset-runtime`, and
+clear the fake site with `POST /api/admin/reset` (or restart it). Measured: the burst takes about 80 s from alarm to work order,
+the false alarm about 20 s.
+
 ## Status
-Steps 0 to 9 done (scaffold, data and seeding, fake Waterstoring.nl, MCP functions, agent runtime, and all six agents: Triage, Diagnostic, Communications, Resource Matchmaker, Procurement and Scheduling). Next: the workflow host that runs them in order.
+Steps 0 to 10 done (scaffold, data and seeding, fake Waterstoring.nl, MCP functions, agent runtime, the six agents, the workflow host with its operator console, and the Aspire AppHost). Next: end-to-end tests and verification (step 11).
