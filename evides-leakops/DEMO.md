@@ -6,6 +6,10 @@ All data is simulated; the Waterstoring site is a fake. About 20 minutes with al
 
 ## What is where
 
+![Architecture](docs/architecture.png)
+
+The storyline as a picture: [docs/functional-flow.html](docs/functional-flow.html) ([PNG](docs/functional-flow.png)).
+
 | What | Where |
 |---|---|
 | Foundry portal | https://ai.azure.com, sign in with the Macaw account, project **evides-leakops** (resource `evides-foundry-88546e`) |

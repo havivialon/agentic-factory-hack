@@ -17,18 +17,16 @@ The goal of this demo is to show how Evides can work with AI and **Microsoft Fou
 testable, traced and evaluated in the portal at https://ai.azure.com), they use tools through an MCP server, and code keeps the
 facts and the rules. **For the demo script, the portal tour and troubleshooting see [DEMO.md](DEMO.md).**
 
-```mermaid
-flowchart LR
-    Op[Operator console<br/>workflow host] -->|alarm| A[Agents app<br/>Azure Functions]
-    A -->|call agent by name| F[Microsoft Foundry project<br/>6 agents + gpt-5.4<br/>guardrails, tracing, evaluations]
-    F -->|MCP tools, server-side| M[MCP server<br/>Azure Functions, 19 tools]
-    A -->|rule checks: same tools| M
-    M --> C[(Cosmos DB<br/>simulated data)]
-    A -->|publish / ETA| W[Fake Waterstoring.nl]
-    W --> C
-    F -.->|traces| I[Application Insights]
-    A -.-> I
-```
+![Architecture of the Evides LeakOps demo](docs/architecture.png)
+
+*Source: [docs/architecture.svg](docs/architecture.svg) (editable).*
+
+### Functional flow
+
+![Functional flow of the burst scenario](docs/functional-flow.png)
+
+*Source: [docs/functional-flow.html](docs/functional-flow.html) (Evides style, open it in a browser).*
+
 Foundry runs an agent and its MCP tool calls; the Agents app checks every answer with code and calls the same MCP tools itself for the
 facts the rules compare the answer with. Nothing the model says is published, booked or dispatched without that check.
 
@@ -43,6 +41,7 @@ facts the rules compare the answer with. Nothing the model says is published, bo
 | `evals/` | Foundry evaluation dataset (`leakops-evals.json`) and runner (`run-evals.ps1`) |
 | `deploy/` | Bicep and scripts: deploy, scale the web plan, tear down |
 | `DEMO.md` | Demo runbook: storyline, portal tour, troubleshooting |
+| `docs/` | Architecture diagram (`architecture.svg`/`.png`) and functional flow (`functional-flow.html`/`.png`) |
 | `src/LeakOps.Waterstoring` | Fake Waterstoring.nl (ingest API + public map) |
 | `src/LeakOps.Workflow` | ASP.NET workflow host: runs the six agents in order, streams progress (SSE), operator console |
 | `src/LeakOps.AppHost` | Aspire AppHost: starts everything locally with one command |
