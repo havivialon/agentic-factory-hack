@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <!-- Fake Waterstoring.nl: ingest API + public map page (step 2). -->
+
+  <ItemGroup>
+    <ProjectReference Include="..\LeakOps.Contracts\LeakOps.Contracts.csproj" />
+  </ItemGroup>
+
+</Project>
