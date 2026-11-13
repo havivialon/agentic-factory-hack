@@ -138,5 +138,43 @@ Cosmos DB data role; both are set up in the deployment step. Leave `COSMOS_KEY` 
 Shared rules (time handling, geometry, travel model, roster check, stock view, purchase math) live in
 `src/LeakOps.Contracts/Logic`, so the tools, the agents and the tests use the same code. Local time is a fixed UTC+1.
 
+## Agents (`src/LeakOps.Agents`)
+An Azure Functions app with one HTTP function per agent, all on one shared runtime (`LeakOpsAgentRuntime`). Agents are
+**code-defined Foundry agents**: `AIProjectClient.AsAIAgent(model, name, instructions, tools)` from `Azure.AI.Projects` and
+`Microsoft.Agents.AI.Foundry`. No server-side agent resource is created; the app owns model, instructions and tools. Each agent
+connects to the MCP server and gets **only the tools on its allow-list**, and returns a schema-checked JSON answer plus a trace
+(tool calls, tokens, duration) so a person can see how the answer came about.
+
+| Agent | Function | Status |
+|---|---|---|
+| 1 Triage | `POST /api/agents/triage` (body: the SCADA alarm) | done |
+| 2-6 Diagnostic, Communications, Matchmaker, Procurement, Scheduling | steps 5 to 9 | planned |
+
+**Triage** is read-only (5 tools: sensors, readings, planned works, weather, usage). The model proposes a verdict; deterministic
+rules in `Contracts/Logic/TriageRules.cs` decide what is accepted: the alarm identity comes from the alarm, confidence stays in
+0..1, the next step follows the verdict, and a verdict becomes `uncertain` (next step `manual_review`) when it has no supporting
+evidence, fewer than two items, or does not quote the alarm sensor's own readings. If the rules overrule the model, it gets one
+more attempt. Azure's content safety can block a prompt; that returns HTTP 502 with `reason: blocked_by_content_filter`.
+
+Measured against the live model (gpt-5.4): burst 5/5 `genuine_leak` (0.96-0.98), planned-works false alarm 10/10 `false_alarm`
+(0.94-0.96), unknown sensor `uncertain`, a subtle prompt injection in the alarm text ignored. About 15 s and 8 tool calls per run.
+
+Run it locally (three more terminals next to Azurite and the MCP host from the section above). The agents need a Foundry token
+for the tenant of the project. If your Azure CLI default account is in another tenant, sign in once with a separate profile so the
+default login stays untouched:
+```powershell
+$env:AZURE_CONFIG_DIR = "$HOME\.azure-macaw"; az login --tenant <tenant-id> --use-device-code   # once
+# then, in the terminal that starts the agents (settings come from the environment; nothing secret is written to a file):
+foreach ($l in Get-Content .env) { if ($l -match '^AZURE_AI_PROJECT_ENDPOINT=(.*)$') { $env:AZURE_AI_PROJECT_ENDPOINT = $Matches[1].Trim().Trim('"') } }
+$env:AZURE_TENANT_ID = "<tenant-id>"; $env:AZURE_CONFIG_DIR = "$HOME\.azure-macaw"
+cd evides-leakops\src\LeakOps.Agents; func start --port 7072
+```
+Then send an alarm (the `alarm` object of a scenario in `data/scenarios.json`):
+```powershell
+curl -X POST http://localhost:7072/api/agents/triage -H "Content-Type: application/json" -d '{"alarmId":"ALM-2026-1114-0001","sensorId":"PS-101","districtId":"D-01","triggeredAtUtc":"2026-11-14T03:10:00Z","metric":"pressure","observedValue":2.85,"unit":"bar","thresholdLow":3.0,"message":"Pressure at PS-101 below low alarm limit."}'
+```
+Credentials: in Azure the app's managed identity is used; locally the Azure CLI (pinned to `AZURE_TENANT_ID`). Settings:
+`AZURE_AI_PROJECT_ENDPOINT`, `MODEL_DEPLOYMENT_NAME` (default `gpt-5.4`), `MCP_SERVER_URL`, `MCP_AUTH_KEY`, `AZURE_TENANT_ID`.
+
 ## Status
-Steps 0 to 3 done (scaffold, data and seeding, fake Waterstoring.nl, MCP functions). Next: agent base and the Triage agent.
+Steps 0 to 4 done (scaffold, data and seeding, fake Waterstoring.nl, MCP functions, agent runtime and Triage agent). Next: Diagnostic agent.
