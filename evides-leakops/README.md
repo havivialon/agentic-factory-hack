@@ -69,5 +69,35 @@ Notes for querying (used from step 3):
 - `value` is a reserved word in Cosmos SQL: write `c["value"]`.
 - Timestamps are stored as UTC strings like `2026-11-14T03:10:00+00:00`. Use that exact format in query parameters.
 
+## Fake Waterstoring.nl (`src/LeakOps.Waterstoring`)
+A public page where residents look up disruptions, plus an API that the Communications and Scheduling agents call.
+Not the real waterstoring.nl: the real site has no known public API, so this contract is our own assumption. Data is kept in
+memory (a restart empties it).
+
+```powershell
+$env:ASPNETCORE_ENVIRONMENT = "Development"      # Development falls back to the demo key "dev-waterstoring-key"
+dotnet run --project evides-leakops\src\LeakOps.Waterstoring --no-launch-profile --urls http://localhost:5080
+```
+Open http://localhost:5080 (also served at `/evides`). The page polls every 5 seconds, so new incidents and changed ETAs appear
+without a reload. It has a search box (postcode with or without space, street or place), a map and an NL/EN switch. The map and
+tiles load from the internet (Leaflet and OpenStreetMap); the list works offline.
+
+| Method and path | Auth | Purpose |
+|---|---|---|
+| `GET /api/incidents[?active=true]` | public | All incidents, active first |
+| `GET /api/incidents/{id}` | public | One incident with its timeline |
+| `GET /api/search?q=3201 AB` | public | Active incidents by postcode, street or place (min. 3 characters) |
+| `POST /api/incidents` | `X-Api-Key` | Create an incident. Posting the same `incidentId` again replaces it (safe to retry) |
+| `PATCH /api/incidents/{id}` | `X-Api-Key` | Change `status`, `message`, `messageEn` and/or `expectedResolutionUtc`; adds a timeline entry |
+| `POST /api/admin/reset` | `X-Api-Key` | Clear all incidents (demo reset) |
+
+Statuses: `reported`, `repair_planned`, `repair_in_progress`, `resolved` (resolved incidents leave the search but stay in the list).
+Request and response shapes are the records in `src/LeakOps.Contracts/Waterstoring.cs`. Outside Development the app refuses to
+start without `WATERSTORING_API_KEY`.
+
+```powershell
+curl -X POST http://localhost:5080/api/incidents -H "X-Api-Key: dev-waterstoring-key" -H "Content-Type: application/json" -d '{ ... }'
+```
+
 ## Status
-Steps 0 (scaffold) and 1 (data and seeding) done. Next: fake Waterstoring.nl.
+Steps 0 (scaffold), 1 (data and seeding) and 2 (fake Waterstoring.nl) done. Next: the C# MCP functions.
