@@ -153,7 +153,8 @@ connects to the MCP server and gets **only the tools on its allow-list**, and re
 | 1 Triage | `POST /api/agents/triage` (body: the SCADA alarm) | done |
 | 2 Diagnostic | `POST /api/agents/diagnostic` (body: `{ "alarm": ..., "triage": ... }`, only for a `genuine_leak` verdict) | done |
 | 3 Communications | `POST /api/agents/communications` (body: `{ "report": <diagnostic report> }`, not for a report that needs review) | done |
-| 4-6 Matchmaker, Procurement, Scheduling | steps 7 to 9 | planned |
+| 4 Resource Matchmaker | `POST /api/agents/matchmaker` (body: `{ "report": <diagnostic report> }`, not for a report that needs review) | done |
+| 5-6 Procurement, Scheduling | steps 8 and 9 | planned |
 
 **Triage** is read-only (5 tools: sensors, readings, planned works, weather, usage). The model proposes a verdict; deterministic
 rules in `Contracts/Logic/TriageRules.cs` decide what is accepted: the alarm identity comes from the alarm, confidence stays in
@@ -182,12 +183,24 @@ The agent then publishes with `POST /api/incidents` (status `reported`, no expec
 later). Incident ids come from the alarm id (`ALM-2026-1114-0001` becomes `INC-2026-1114-0001`) and are the same in every step;
 posting again replaces the incident, so a retry is harmless. A publish failure returns 502 with `reason: publish_failed`.
 
+**Resource Matchmaker** is read-only (tools `get-technicians`, `get-repair-procedure`); it books nobody. The model reads the repair
+procedure and the live roster and proposes a primary technician and a backup. Code then fetches the same two facts itself and
+`Contracts/Logic/MatchmakerRules.cs` decides who is allowed: on shift, not busy at the alarm time and holding every certification
+of the procedure. Among the eligible the one who arrives first wins. A proposal that is ineligible, unknown or slower than the best
+option is corrected (with a warning) and the model's text about the wrong person is replaced by a summary built from the data.
+The report lists every technician with the reason he or she was or was not eligible (for the burst: T-01 is nearest but lacks
+CI-REPAIR-L3 and EXCAVATOR-OP, T-03 is busy, T-04 is off shift). Warnings flag a shift that ends before the repair is expected to
+finish and a technician who cannot tow the excavator. When nobody qualifies there is no primary: the report needs review and names
+the first qualified technician and when he or she is free. A diagnosis that needs review is refused with 422.
+
 Measured against the live model (gpt-5.4): Triage burst 5/5 `genuine_leak` (0.96-0.98), planned-works false alarm 10/10
 `false_alarm` (0.94-0.96), unknown sensor `uncertain`, a subtle prompt injection in the alarm text ignored. About 15 s per Triage
 run. Diagnostic: 8 of 8 runs identical (SEG-0412, 174 m from the start with ±54 m against a simulated break at 160 m, burst, S1,
 both valves, procedure `RP-CI-300-400-BURST`); when Triage was deliberately given the wrong segment, the agent corrected it 3 of 3
 times. About 21 s per run. Communications: 7 of 7 drafts accepted on the first attempt (about 6 s each), natural Dutch and English,
 no repair time promised; the rules' rejection, retry and safe-template paths are covered by unit tests with fake drafters.
+Resource Matchmaker: 6 of 6 runs chose T-02 (6 min away) with T-05 as backup and no corrections, about 22 s per run; a PVC repair
+at night correctly found nobody certified on shift.
 
 Run it locally (three more terminals next to Azurite and the MCP host from the section above). The agents need a Foundry token
 for the tenant of the project. If your Azure CLI default account is in another tenant, sign in once with a separate profile so the
@@ -207,4 +220,4 @@ Credentials: in Azure the app's managed identity is used; locally the Azure CLI 
 `AZURE_AI_PROJECT_ENDPOINT`, `MODEL_DEPLOYMENT_NAME` (default `gpt-5.4`), `MCP_SERVER_URL`, `MCP_AUTH_KEY`, `AZURE_TENANT_ID`.
 
 ## Status
-Steps 0 to 6 done (scaffold, data and seeding, fake Waterstoring.nl, MCP functions, agent runtime, Triage, Diagnostic and Communications agents). Next: Resource Matchmaker agent.
+Steps 0 to 7 done (scaffold, data and seeding, fake Waterstoring.nl, MCP functions, agent runtime, Triage, Diagnostic, Communications and Resource Matchmaker agents). Next: Procurement agent.

@@ -1,3 +1,5 @@
+using LeakOps.Contracts.Logic;
+
 namespace LeakOps.Contracts;
 
 /// <summary>One piece of evidence behind a verdict. Every claim an agent makes must show its source and the numbers.</summary>
@@ -117,3 +119,42 @@ public record CommunicationsResult(
     IReadOnlyList<string> RejectedDraftIssues,
     WaterstoringIncident Published,
     string PublicUrl);
+
+// ---- Resource Matchmaker agent ----------------------------------------------------------------------------------
+
+/// <summary>Input of the Resource Matchmaker: the diagnosis. A report that needs review gets nobody dispatched.</summary>
+public record MatchmakerRequest(DiagnosticReport Report);
+
+/// <summary>What the model decides: who goes first and who is the backup, and why. Eligibility is checked by code.</summary>
+public record MatchJudgement(
+    string PrimaryTechnicianId,
+    string? BackupTechnicianId,
+    string Summary);
+
+/// <summary>How one technician was assessed against this repair, so a dispatcher can see why somebody was or was not chosen.</summary>
+public record CandidateAssessment(
+    string TechnicianId,
+    string Name,
+    bool Eligible,                   // on shift, not busy and holding every required certification
+    string Reason,
+    int? TravelMinutes,
+    double? DistanceKm);
+
+/// <summary>Output of the Resource Matchmaker agent: the technician to send, a backup and the assessment of everybody else.</summary>
+public record ResourceMatch(
+    string IncidentId,
+    string AlarmId,
+    string SegmentId,
+    GeoPoint Site,
+    IReadOnlyList<string> RequiredCertifications,
+    string? RepairProcedureId,
+    double EstimatedRepairHours,
+    bool NeedsExcavator,
+    TechnicianStatus? Primary,
+    TechnicianStatus? Backup,
+    IReadOnlyList<CandidateAssessment> Candidates,
+    string Summary,
+    IReadOnlyList<string> Warnings,        // every correction of the model's answer and every point a dispatcher should know
+    bool NeedsReview,                      // true when nobody can be dispatched without a person deciding
+    IReadOnlyList<string> ReviewReasons);
+

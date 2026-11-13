@@ -8,7 +8,7 @@ using Microsoft.Extensions.Logging;
 namespace LeakOps.Agents;
 
 /// <summary>HTTP entry points of the Agents function app. One function per agent; the workflow host calls them in order.</summary>
-public class AgentFunctions(TriageAgent triage, DiagnosticAgent diagnostic, CommunicationsAgent communications, ILogger<AgentFunctions> logger)
+public class AgentFunctions(TriageAgent triage, DiagnosticAgent diagnostic, CommunicationsAgent communications, ResourceMatchmakerAgent matchmaker, ILogger<AgentFunctions> logger)
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
@@ -70,6 +70,30 @@ public class AgentFunctions(TriageAgent triage, DiagnosticAgent diagnostic, Comm
             });
 
         return await RunAsync("Communications", report.AlarmId, () => communications.CommunicateAsync(body!, cancellationToken));
+    }
+
+    /// <summary>POST /api/agents/matchmaker with { report }; finds the closest available, certified technician. Not for a report that needs review.</summary>
+    [Function("Matchmaker")]
+    public async Task<IActionResult> Matchmaker(
+        [HttpTrigger(AuthorizationLevel.Function, "post", Route = "agents/matchmaker")] HttpRequest request,
+        CancellationToken cancellationToken)
+    {
+        var (body, bad) = await ReadBodyAsync<MatchmakerRequest>(request, cancellationToken);
+        if (bad is not null) return bad;
+
+        var report = body?.Report;
+        if (report is null) return new BadRequestObjectResult(new { error = "report is required." });
+        if (string.IsNullOrWhiteSpace(report.AlarmId) || string.IsNullOrWhiteSpace(report.Material) || report.DiameterMm <= 0
+            || string.IsNullOrWhiteSpace(report.BreachType) || report.TriggeredAtUtc == default)
+            return new BadRequestObjectResult(new { error = "report needs alarmId, triggeredAtUtc, material, diameterMm and breachType." });
+        if (report.NeedsReview)
+            return new UnprocessableEntityObjectResult(new
+            {
+                error = "Nobody is dispatched: the diagnosis needs review by a person first.",
+                reviewReasons = report.ReviewReasons,
+            });
+
+        return await RunAsync("Matchmaker", report.AlarmId, () => matchmaker.MatchAsync(body!, cancellationToken));
     }
 
     private async Task<IActionResult> RunAsync<T>(string agent, string alarmId, Func<Task<AgentResult<T>>> run)

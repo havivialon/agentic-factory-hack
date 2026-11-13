@@ -31,5 +31,6 @@ builder.Services.AddSingleton<LeakOpsAgentRuntime>();
 builder.Services.AddSingleton<TriageAgent>();
 builder.Services.AddSingleton<DiagnosticAgent>();
 builder.Services.AddSingleton<CommunicationsAgent>();
+builder.Services.AddSingleton<ResourceMatchmakerAgent>();
 
 builder.Build().Run();
