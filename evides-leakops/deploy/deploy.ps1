@@ -11,7 +11,8 @@
   2. Seeds the simulated data into the new Cosmos DB (the key is read for this run only and never written to disk).
   3. Publishes the code of the four apps.
   4. Makes sure the two function keys exist, so Foundry and the agents can call the MCP tools and the workflow host can call the agents.
-  5. Checks the health of all four apps.
+  5. Registers the six agents in the Foundry project (src/LeakOps.AgentRegistry), so they show up in https://ai.azure.com.
+  6. Checks the health of all four apps.
 
   It is safe to run again: keys that already exist are kept, so nothing has to be re-entered. Nothing secret is written to a file;
   keys live only in the app settings of the apps (and in this script's memory while it runs).
@@ -210,7 +211,19 @@ if (-not $SkipPublish) {
     Wait-Until 'agents function key set' { Az functionapp keys set --subscription $SubscriptionId -g $ResourceGroup -n $names.Agents --key-type functionKeys --key-name leakops-workflow --key-value $agentsKey -o none; $true }
 }
 
-Write-Host "`n== 5. Health" -ForegroundColor Cyan
+Write-Host "`n== 5. Foundry agents" -ForegroundColor Cyan
+# Creates the six agents in the Foundry project (they then show up in the portal). A new version is only made when the definition
+# changed. The sign-in used is the deployer's Azure CLI account, which the Bicep gave the Foundry User role.
+$env:AZURE_AI_PROJECT_ENDPOINT = $outputs.foundryProjectEndpoint.value
+$env:MCP_SERVER_URL = "$($url.Mcp)/runtime/webhooks/mcp"
+$env:MODEL_DEPLOYMENT_NAME = $outputs.modelDeployment.value
+$env:AZURE_TENANT_ID = (Az account show --subscription $SubscriptionId --query tenantId -o tsv | Out-String).Trim()
+Invoke-WithRetry 'register the Foundry agents' {
+    & dotnet run --project (Join-Path $root 'src/LeakOps.AgentRegistry') -c Release
+    if ($LASTEXITCODE -ne 0) { throw 'Registering the agents failed.' }
+}
+
+Write-Host "`n== 6. Health" -ForegroundColor Cyan
 Wait-Until 'waterstoring' { (Invoke-WebRequest "$($url.Waterstoring)/health" -UseBasicParsing -TimeoutSec 20).StatusCode -eq 200 }
 Wait-Until 'workflow host' { (Invoke-WebRequest "$($url.Workflow)/health" -UseBasicParsing -TimeoutSec 20).StatusCode -eq 200 }
 Wait-Until 'agents (with the function key)' { (Invoke-WebRequest "$($url.Agents)/api/health" -Headers @{ 'x-functions-key' = $agentsKey } -UseBasicParsing -TimeoutSec 30).StatusCode -eq 200 }

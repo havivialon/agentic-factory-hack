@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/LeakOps.AppHost/LeakOps.AppHost.csproj" />
+    <Project Path="src/LeakOps.AgentRegistry/LeakOps.AgentRegistry.csproj" />
     <Project Path="src/LeakOps.Agents/LeakOps.Agents.csproj" />
     <Project Path="src/LeakOps.Contracts/LeakOps.Contracts.csproj" />
     <Project Path="src/LeakOps.Mcp/LeakOps.Mcp.csproj" />
