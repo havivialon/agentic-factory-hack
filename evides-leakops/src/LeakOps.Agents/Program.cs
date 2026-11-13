@@ -32,5 +32,6 @@ builder.Services.AddSingleton<TriageAgent>();
 builder.Services.AddSingleton<DiagnosticAgent>();
 builder.Services.AddSingleton<CommunicationsAgent>();
 builder.Services.AddSingleton<ResourceMatchmakerAgent>();
+builder.Services.AddSingleton<ProcurementAgent>();
 
 builder.Build().Run();

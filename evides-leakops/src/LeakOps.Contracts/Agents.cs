@@ -158,3 +158,40 @@ public record ResourceMatch(
     bool NeedsReview,                      // true when nobody can be dispatched without a person deciding
     IReadOnlyList<string> ReviewReasons);
 
+// ---- Procurement agent ------------------------------------------------------------------------------------------
+
+/// <summary>Input of the Procurement agent: the diagnosis. A report that needs review reserves nothing.</summary>
+public record ProcurementRequest(DiagnosticReport Report);
+
+/// <summary>What the model decides: which conditional parts the repair needs, which equipment to take, and the explanation. Quantities, stock and orders are decided by code.</summary>
+public record ProcurementJudgement(
+    IReadOnlyList<string> PartSkus,        // parts the repair needs, including conditional ones of the repair procedure
+    IReadOnlyList<string> EquipmentSkus,   // equipment to take, one per equipment requirement of the procedure
+    string Rationale);                     // why: written before anything is booked, so it can not describe the outcome
+
+/// <summary>One part or piece of equipment the repair needs and how well it is covered.</summary>
+public record PackageLine(
+    string Sku,
+    string Name,
+    string Kind,                     // part | equipment
+    int Needed,
+    int Reserved,
+    int Short,
+    string Why,
+    string Status);                  // reserved | already_reserved | partly_reserved | short | failed (...)
+
+/// <summary>Output of the Procurement agent: what is reserved for the repair, what is on order and what is still missing.</summary>
+public record ProcurementResult(
+    string IncidentId,
+    string AlarmId,
+    string? RepairProcedureId,
+    bool PackageComplete,                  // everything the repair needs is reserved right now
+    IReadOnlyList<PackageLine> Lines,
+    IReadOnlyList<PurchaseOrder> PurchaseOrders,
+    IReadOnlyList<string> Contingencies,   // parts that are only needed if something goes wrong, and how well they are covered
+    string Summary,                        // what was reserved, what is short and what is ordered, written by the rules from the real outcome
+    string Rationale,                      // the agent's reasoning for the choices it made, written by the model before booking
+    IReadOnlyList<string> Warnings,
+    bool NeedsReview,                      // true when the repair cannot be equipped without a person deciding
+    IReadOnlyList<string> ReviewReasons);
+

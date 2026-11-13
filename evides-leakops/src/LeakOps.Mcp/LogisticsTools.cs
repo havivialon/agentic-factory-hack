@@ -32,6 +32,19 @@ public class LogisticsTools(LeakOpsStore store, ILogger<LogisticsTools> logger)
         return ToolJson.Ok(new { atUtc = at, count = items.Count, unknownSkus = unknown, items });
     }
 
+    [Function(nameof(GetIncidentPackage))]
+    public async Task<string> GetIncidentPackage(
+        [McpToolTrigger("get-incident-package", "Lists what an incident has already reserved and ordered. Use it before reserving or ordering again, so nothing is counted twice.")]
+        ToolInvocationContext context,
+        [McpToolProperty("incidentId", "Incident id, for example INC-2026-1114-0001", isRequired: true)] string incidentId)
+    {
+        if (string.IsNullOrWhiteSpace(incidentId)) return ToolJson.Error("'incidentId' is required.");
+        var reservations = await store.ListReservationsAsync(incidentId);
+        var orders = await store.ListPurchaseOrdersAsync(incidentId);
+        logger.LogInformation("get-incident-package {IncidentId} -> {Reservations} reservations, {Orders} orders", incidentId, reservations.Count, orders.Count);
+        return ToolJson.Ok(new { incidentId, reservations, purchaseOrders = orders });
+    }
+
     [Function(nameof(ReserveStock))]
     public async Task<string> ReserveStock(
         [McpToolTrigger("reserve-stock", "Reserves a part or a piece of equipment for an incident. Safe to repeat: the same incident and SKU is only reserved once. Fails with status 'insufficient_stock' (and the shortfall) when not enough is available. 'belowReorderLevel' tells whether the remaining stock needs replenishing.")]
@@ -93,10 +106,14 @@ public class LogisticsTools(LeakOpsStore store, ILogger<LogisticsTools> logger)
         [McpToolProperty("quantity", "Number of units to order", isRequired: true)] int? quantity,
         [McpToolProperty("reason", "Why the order is needed, one sentence", isRequired: true)] string reason,
         [McpToolProperty("express", "True for express delivery (surcharge, shorter lead time). Default false.", isRequired: false)] bool? express,
-        [McpToolProperty("orderedAtUtc", "Order moment, ISO 8601 UTC. Default now.", isRequired: false)] string? orderedAtUtc)
+        [McpToolProperty("orderedAtUtc", "Order moment, ISO 8601 UTC. Default now.", isRequired: false)] string? orderedAtUtc,
+        [McpToolProperty("purpose", "'urgent' (default) for parts this incident is short of, or 'replenishment' to restock afterwards. Each purpose has its own order per incident and SKU.", isRequired: false)] string? purpose)
     {
         if (string.IsNullOrWhiteSpace(incidentId)) return ToolJson.Error("'incidentId' is required.");
         if (quantity is null or < 1) return ToolJson.Error("'quantity' must be 1 or more.");
+        if (purpose is not null && purpose.Trim().ToLowerInvariant() is not ("urgent" or "replenishment" or ""))
+            return ToolJson.Error("'purpose' must be 'urgent' or 'replenishment'.");
+        var suffix = purpose?.Trim().Equals("replenishment", StringComparison.OrdinalIgnoreCase) == true ? Procurement.ReplenishmentSuffix : "";
         var at = DateTimeOffset.UtcNow;
         if (!string.IsNullOrWhiteSpace(orderedAtUtc) && !ToolJson.TryTime(orderedAtUtc, "orderedAtUtc", out at, out var error)) return error;
 
@@ -105,7 +122,7 @@ public class LogisticsTools(LeakOpsStore store, ILogger<LogisticsTools> logger)
         if (item.Kind != "part") return ToolJson.Error($"{item.Id} is equipment and cannot be purchased with this tool.");
 
         var supplier = (await store.GetSuppliersAsync())[item.SupplierId];
-        var order = Procurement.BuildOrder(item, supplier, incidentId, quantity.Value, express == true, reason, at);
+        var order = Procurement.BuildOrder(item, supplier, incidentId, quantity.Value, express == true, reason, at, suffix);
         await store.UpsertPurchaseOrderAsync(order);
         logger.LogInformation("create-purchase-order {OrderId} total {Total} status {Status}", order.Id, order.TotalEur, order.Status);
 

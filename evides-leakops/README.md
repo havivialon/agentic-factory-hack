@@ -122,7 +122,8 @@ and work orders. Errors are returned as JSON (`{"error": ...}`) so an agent can 
 | Matchmaker | `get-technicians` | Live roster at a time: on shift, busy, missing certifications, travel time to the site |
 | Procurement | `get-inventory` | Stock, reorder levels, prices, warehouses, supplier lead times |
 | | `reserve-stock` | Atomic, idempotent reservation (parts and equipment); reports `insufficient_stock`, `equipment_unavailable` |
-| | `create-purchase-order` | Order at the supplier, express option, approval above 2500 EUR |
+| | `create-purchase-order` | Order at the supplier, express option, approval above 2500 EUR; `purpose` urgent or replenishment (separate orders per incident and SKU) |
+| | `get-incident-package` | What an incident has already reserved and ordered, so a repeat run never counts twice |
 | Scheduling | `get-travel-estimate` | Travel time with optional stop (e.g. depot), depends on time of day |
 | | `create-work-order` | Builds the job package, computes arrival and completion, refuses uncertified technicians |
 
@@ -154,7 +155,8 @@ connects to the MCP server and gets **only the tools on its allow-list**, and re
 | 2 Diagnostic | `POST /api/agents/diagnostic` (body: `{ "alarm": ..., "triage": ... }`, only for a `genuine_leak` verdict) | done |
 | 3 Communications | `POST /api/agents/communications` (body: `{ "report": <diagnostic report> }`, not for a report that needs review) | done |
 | 4 Resource Matchmaker | `POST /api/agents/matchmaker` (body: `{ "report": <diagnostic report> }`, not for a report that needs review) | done |
-| 5-6 Procurement, Scheduling | steps 8 and 9 | planned |
+| 5 Procurement | `POST /api/agents/procurement` (body: `{ "report": <diagnostic report> }`, not for a report that needs review) | done |
+| 6 Scheduling | step 9 | planned |
 
 **Triage** is read-only (5 tools: sensors, readings, planned works, weather, usage). The model proposes a verdict; deterministic
 rules in `Contracts/Logic/TriageRules.cs` decide what is accepted: the alarm identity comes from the alarm, confidence stays in
@@ -193,6 +195,19 @@ CI-REPAIR-L3 and EXCAVATOR-OP, T-03 is busy, T-04 is off shift). Warnings flag a
 finish and a technician who cannot tow the excavator. When nobody qualifies there is no primary: the report needs review and names
 the first qualified technician and when he or she is free. A diagnosis that needs review is refused with 422.
 
+**Procurement** equips the repair. The model reads the repair procedure and the stock and says which conditional parts are needed
+and which equipment to take, with a rationale. It books nothing: `Contracts/Logic/ProcurementRules.cs` first turns that into a plan
+and code then reserves and orders. The rules take every part the procedure marks "always"; evaluate the conditional ones (the pipe
+section when the severity is S1 or S2, its couplings only together with the section, the gate valve only when an isolation valve is
+not open) and keep the others as a contingency with their stock and lead times; ignore anything outside the procedure; and choose
+equipment that meets the minimum capacity and is really available (a model pick of the 14 t excavator, which is in service until
+Monday, is replaced by the 8 t one). A part that is short is reserved for as far as stock goes and the rest is ordered express,
+because the repair needs it now; a part that ends below its reorder level gets a separate standard replenishment order. Orders above
+2,500 EUR wait for a manager's approval. `get-incident-package` makes it safe to run twice: what the incident already holds is
+counted, so nothing is reserved or ordered double. The `summary` is written by the rules from the real outcome (what is reserved,
+what is short and when the order arrives, what is being restocked, what is a contingency); the model's `rationale` is kept apart.
+`packageComplete` is false while anything is short, so the Scheduling agent knows the package is not complete at departure.
+
 Measured against the live model (gpt-5.4): Triage burst 5/5 `genuine_leak` (0.96-0.98), planned-works false alarm 10/10
 `false_alarm` (0.94-0.96), unknown sensor `uncertain`, a subtle prompt injection in the alarm text ignored. About 15 s per Triage
 run. Diagnostic: 8 of 8 runs identical (SEG-0412, 174 m from the start with ±54 m against a simulated break at 160 m, burst, S1,
@@ -200,7 +215,9 @@ both valves, procedure `RP-CI-300-400-BURST`); when Triage was deliberately give
 times. About 21 s per run. Communications: 7 of 7 drafts accepted on the first attempt (about 6 s each), natural Dutch and English,
 no repair time promised; the rules' rejection, retry and safe-template paths are covered by unit tests with fake drafters.
 Resource Matchmaker: 6 of 6 runs chose T-02 (6 min away) with T-05 as backup and no corrections, about 22 s per run; a PVC repair
-at night correctly found nobody certified on shift.
+at night correctly found nobody certified on shift. Procurement: for the burst the package was always the same (9 items reserved,
+one DN300 coupling short and ordered express for 675 EUR, a 4,110 EUR restock of clamps held for approval, the gate valve kept as
+a contingency); a repeat run changed nothing. About 26 s per run.
 
 Run it locally (three more terminals next to Azurite and the MCP host from the section above). The agents need a Foundry token
 for the tenant of the project. If your Azure CLI default account is in another tenant, sign in once with a separate profile so the
@@ -220,4 +237,4 @@ Credentials: in Azure the app's managed identity is used; locally the Azure CLI 
 `AZURE_AI_PROJECT_ENDPOINT`, `MODEL_DEPLOYMENT_NAME` (default `gpt-5.4`), `MCP_SERVER_URL`, `MCP_AUTH_KEY`, `AZURE_TENANT_ID`.
 
 ## Status
-Steps 0 to 7 done (scaffold, data and seeding, fake Waterstoring.nl, MCP functions, agent runtime, Triage, Diagnostic, Communications and Resource Matchmaker agents). Next: Procurement agent.
+Steps 0 to 8 done (scaffold, data and seeding, fake Waterstoring.nl, MCP functions, agent runtime, Triage, Diagnostic, Communications, Resource Matchmaker and Procurement agents). Next: Scheduling agent.

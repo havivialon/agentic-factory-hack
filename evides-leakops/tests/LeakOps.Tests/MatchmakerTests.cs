@@ -37,7 +37,7 @@ public class MatchmakerTests
         Assert.Equal("T-05", match.Backup!.Id);
         Assert.Equal("INC-" + report.AlarmId[4..], match.IncidentId);
         Assert.False(match.NeedsReview);
-        Assert.Empty(match.Warnings.Where(w => w.Contains("model")));
+        Assert.DoesNotContain(match.Warnings, w => w.Contains("model"));
 
         var byId = match.Candidates.ToDictionary(c => c.TechnicianId);
         Assert.Contains("missing", byId["T-01"].Reason);                  // nearest on shift, but not certified for cast iron

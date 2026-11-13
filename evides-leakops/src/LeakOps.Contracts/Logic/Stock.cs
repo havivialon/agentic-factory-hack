@@ -13,6 +13,7 @@ public record StockView(
     int QuantityAvailable,           // 0 when equipment is not back yet at the requested time
     DateTimeOffset? AvailableFromUtc,
     int ReorderLevel,
+    int ReorderQuantity,
     bool BelowReorderLevel,          // available quantity is below the reorder level
     double UnitPriceEur,
     string Warehouse,
@@ -38,7 +39,7 @@ public static class StockViews
         return new StockView(
             item.Id, item.Name, item.Category, item.Kind, item.EquipmentType, item.CapacityTonnes, item.DiameterMm,
             item.QuantityOnHand, item.QuantityReserved, available, item.AvailableFromUtc,
-            item.ReorderLevel, item.Kind == "part" && available < item.ReorderLevel, item.UnitPriceEur,
+            item.ReorderLevel, item.ReorderQuantity, item.Kind == "part" && available < item.ReorderLevel, item.UnitPriceEur,
             warehouse.Name, warehouse.Location, supplier.Name,
             supplier.StandardLeadTimeDays, supplier.ExpressLeadHours, supplier.ExpressSurchargePercent, item.Notes);
     }
@@ -49,8 +50,14 @@ public static class Procurement
     /// <summary>Orders above this total need a manager's approval (simulated rule).</summary>
     public const double ApprovalThresholdEur = 2500;
 
+    public const string ReplenishmentSuffix = "-REPL";
+
+    /// <summary>
+    /// A purchase order for one SKU of one incident. An urgent order (parts this repair is short of) and a replenishment order
+    /// (restocking after the repair used the stock) are different orders, so the replenishment gets its own id suffix.
+    /// </summary>
     public static PurchaseOrder BuildOrder(
-        InventoryItem item, Supplier supplier, string incidentId, int quantity, bool express, string reason, DateTimeOffset orderedAtUtc)
+        InventoryItem item, Supplier supplier, string incidentId, int quantity, bool express, string reason, DateTimeOffset orderedAtUtc, string idSuffix = "")
     {
         var ordered = LeakOpsTime.Utc(orderedAtUtc);
         var surcharge = express ? 1 + supplier.ExpressSurchargePercent / 100.0 : 1.0;
@@ -59,7 +66,7 @@ public static class Procurement
         var needsApproval = total > ApprovalThresholdEur;
 
         return new PurchaseOrder(
-            Id: $"PO-{incidentId}-{item.Id}",
+            Id: $"PO-{incidentId}-{item.Id}{idSuffix}",
             IncidentId: incidentId,
             Sku: item.Id,
             Name: item.Name,
