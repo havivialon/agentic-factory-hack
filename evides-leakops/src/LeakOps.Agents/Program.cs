@@ -28,5 +28,6 @@ builder.Services.AddSingleton(sp =>
 });
 builder.Services.AddSingleton<LeakOpsAgentRuntime>();
 builder.Services.AddSingleton<TriageAgent>();
+builder.Services.AddSingleton<DiagnosticAgent>();
 
 builder.Build().Run();

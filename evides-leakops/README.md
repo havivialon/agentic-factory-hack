@@ -113,6 +113,9 @@ and work orders. Errors are returned as JSON (`{"error": ...}`) so an agent can 
 | | `get-weather` | Hourly weather with frost hours |
 | | `get-usage-history` | What normal looks like for that hour and day type, plus known past deviations |
 | Diagnostic | `get-pipe-segment` | GIS data: material, diameter, age, depth, customers, sensors, valves |
+| | `rank-segments-by-pressure-drop` | Segments of a district ranked by how far their sensors fell; the leak is normally on top |
+| | `estimate-leak-position` | Position along the segment from the pressure gradient between sensors, with uncertainty, plus inlet flow versus normal |
+| | `classify-severity` | S1 to S4 from a fixed rubric (breach type, customers, critical customers, diameter) with reasons |
 | | `get-point-on-segment` | Chainage to coordinates, isolation valves, affected customers and postal codes |
 | | `get-nearby-valves` | Valves within a radius of a coordinate |
 | | `get-repair-procedure` | Certifications, parts, equipment and hours for a material, diameter and breach type |
@@ -148,7 +151,8 @@ connects to the MCP server and gets **only the tools on its allow-list**, and re
 | Agent | Function | Status |
 |---|---|---|
 | 1 Triage | `POST /api/agents/triage` (body: the SCADA alarm) | done |
-| 2-6 Diagnostic, Communications, Matchmaker, Procurement, Scheduling | steps 5 to 9 | planned |
+| 2 Diagnostic | `POST /api/agents/diagnostic` (body: `{ "alarm": ..., "triage": ... }`, only for a `genuine_leak` verdict) | done |
+| 3-6 Communications, Matchmaker, Procurement, Scheduling | steps 6 to 9 | planned |
 
 **Triage** is read-only (5 tools: sensors, readings, planned works, weather, usage). The model proposes a verdict; deterministic
 rules in `Contracts/Logic/TriageRules.cs` decide what is accepted: the alarm identity comes from the alarm, confidence stays in
@@ -156,8 +160,21 @@ rules in `Contracts/Logic/TriageRules.cs` decide what is accepted: the alarm ide
 evidence, fewer than two items, or does not quote the alarm sensor's own readings. If the rules overrule the model, it gets one
 more attempt. Azure's content safety can block a prompt; that returns HTTP 502 with `reason: blocked_by_content_filter`.
 
-Measured against the live model (gpt-5.4): burst 5/5 `genuine_leak` (0.96-0.98), planned-works false alarm 10/10 `false_alarm`
-(0.94-0.96), unknown sensor `uncertain`, a subtle prompt injection in the alarm text ignored. About 15 s and 8 tool calls per run.
+**Diagnostic** is read-only too (8 tools). The model decides what only it can: which segment it concludes on, burst or leak, the
+order to close the valves, and the explanation. Everything factual is built by code in `Contracts/Logic/DiagnosticRules.cs` from
+GIS data fetched straight from the MCP server (marked `(rules)` in the trace): material, diameter, customers, coordinates, the
+severity (fixed rubric) and the isolation plan (always every isolation valve of the segment, since a break inside a segment must
+be closed off on both sides). The leak position comes from the `estimate-leak-position` tool (pressure-gradient method), never
+from the model's arithmetic. The report lists every correction as a `warnings` entry, and sets `needsReview` with `reviewReasons`
+when a person should check before anyone is sent out: the diagnosed segment is not where the pressure fell most, the position is
+only known to within 40% of the segment length, or there is no standard repair procedure. Triage's suspected segment is treated as
+a hypothesis: the agent ranks the segments by pressure drop first and switches segment when the data says so.
+
+Measured against the live model (gpt-5.4): Triage burst 5/5 `genuine_leak` (0.96-0.98), planned-works false alarm 10/10
+`false_alarm` (0.94-0.96), unknown sensor `uncertain`, a subtle prompt injection in the alarm text ignored. About 15 s per Triage
+run. Diagnostic: 8 of 8 runs identical (SEG-0412, 174 m from the start with ±54 m against a simulated break at 160 m, burst, S1,
+both valves, procedure `RP-CI-300-400-BURST`); when Triage was deliberately given the wrong segment, the agent corrected it 3 of 3
+times. About 21 s per run.
 
 Run it locally (three more terminals next to Azurite and the MCP host from the section above). The agents need a Foundry token
 for the tenant of the project. If your Azure CLI default account is in another tenant, sign in once with a separate profile so the
@@ -177,4 +194,4 @@ Credentials: in Azure the app's managed identity is used; locally the Azure CLI 
 `AZURE_AI_PROJECT_ENDPOINT`, `MODEL_DEPLOYMENT_NAME` (default `gpt-5.4`), `MCP_SERVER_URL`, `MCP_AUTH_KEY`, `AZURE_TENANT_ID`.
 
 ## Status
-Steps 0 to 4 done (scaffold, data and seeding, fake Waterstoring.nl, MCP functions, agent runtime and Triage agent). Next: Diagnostic agent.
+Steps 0 to 5 done (scaffold, data and seeding, fake Waterstoring.nl, MCP functions, agent runtime and Triage agent, Diagnostic agent). Next: Communications agent.

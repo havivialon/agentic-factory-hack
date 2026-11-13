@@ -6,6 +6,7 @@ using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Client;
+using ModelContextProtocol.Protocol;
 
 namespace LeakOps.Agents;
 
@@ -55,6 +56,22 @@ public class LeakOpsAgentRuntime(AIProjectClient project, AgentSettings settings
             spec.Name, trace.DurationMs, calls.Count, string.Join(", ", calls.Select(c => c.Name)));
 
         return new AgentResult<T>(response.Result, trace);
+    }
+
+    /// <summary>
+    /// Calls one MCP tool straight from code, without the model, and returns its JSON result. Used to fetch the authoritative
+    /// facts (GIS data, procedures) that the rules check the model's answer against. Throws when the tool reports an error.
+    /// </summary>
+    public async Task<JsonElement> CallToolAsync(string tool, Dictionary<string, object?> arguments, CancellationToken cancellationToken)
+    {
+        await using var mcp = await ConnectMcpAsync(cancellationToken);
+        var result = await mcp.CallToolAsync(tool, arguments, cancellationToken: cancellationToken);
+        var text = string.Concat(result.Content.OfType<TextContentBlock>().Select(c => c.Text));
+        var json = JsonDocument.Parse(text).RootElement.Clone();
+
+        if (result.IsError == true || (json.ValueKind == JsonValueKind.Object && json.TryGetProperty("error", out _)))
+            throw new InvalidOperationException($"MCP tool '{tool}' failed: {text}");
+        return json;
     }
 
     private async Task<McpClient> ConnectMcpAsync(CancellationToken cancellationToken)

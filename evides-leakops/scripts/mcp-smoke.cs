@@ -60,6 +60,13 @@ Expect(point.GetProperty("isolationValves").GetArrayLength() == 2, "two isolatio
 var badPoint = await Call("get-point-on-segment", new() { ["segmentId"] = "SEG-0412", ["chainageM"] = 9999 });
 Expect(badPoint.TryGetProperty("error", out _), "position beyond the segment is rejected");
 await Call("get-nearby-valves", new() { ["lat"] = 51.8608, ["lon"] = 4.3303, ["radiusM"] = 400 }, 250);
+var ranking = await Call("rank-segments-by-pressure-drop", new() { ["districtId"] = "D-01", ["untilUtc"] = alarm }, 350);
+Expect(Text(ranking.GetProperty("ranking")[0], "segmentId") == "SEG-0412" && ranking.GetProperty("ranking")[0].GetProperty("maxDropBar").GetDouble() > 1.5, "SEG-0412 has the strongest pressure drop of the district");
+var estimate = await Call("estimate-leak-position", new() { ["segmentId"] = "SEG-0412", ["untilUtc"] = alarm }, 500);
+Expect(Math.Abs(estimate.GetProperty("estimatedChainageM").GetDouble() - 160) <= 30, "estimated leak position is within 30 m of the simulated break (160 m)");
+Expect(estimate.GetProperty("inletFlow").GetProperty("excessOverExpectedM3h").GetDouble() > 40, "inlet flow is more than 40 m3/h above normal");
+Expect(Text(await Call("classify-severity", new() { ["segmentId"] = "SEG-0412", ["breachType"] = "burst" }, 300), "severity") == "S1", "a burst here is S1 (care home, 1840 customers)");
+Expect((await Call("classify-severity", new() { ["segmentId"] = "SEG-0412", ["breachType"] = "explosion" })).TryGetProperty("error", out _), "unknown breach type is rejected");
 var procedure = await Call("get-repair-procedure", new() { ["material"] = "cast_iron", ["diameterMm"] = 300 }, 200);
 Expect(Text(procedure, "id") == "RP-CI-300-400-BURST", "cast iron DN300 burst procedure found");
 

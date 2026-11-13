@@ -97,6 +97,135 @@ public class DiagnosticTools(LeakOpsStore store, ILogger<DiagnosticTools> logger
         return ToolJson.Ok(new { center = here, radiusM = radius, count = valves.Count, valves });
     }
 
+    [Function(nameof(EstimateLeakPosition))]
+    public async Task<string> EstimateLeakPosition(
+        [McpToolTrigger("estimate-leak-position", "Estimates where along a pipe segment a leak is (distance in metres from the segment start) from the pressure drops at the sensors on that segment, using the pressure-gradient method, with an uncertainty in metres. Also returns the district inlet flow compared with what is normal for that hour, which helps tell a burst from a small leak.")]
+        ToolInvocationContext context,
+        [McpToolProperty("segmentId", "Pipe segment id, for example SEG-0412", isRequired: true)] string segmentId,
+        [McpToolProperty("untilUtc", "The moment to look at, ISO 8601 UTC. Normally the alarm time.", isRequired: true)] string untilUtc,
+        [McpToolProperty("lookbackMinutes", "Compare the pressure at that moment with this many minutes earlier. Default 30, between 10 and 180.", isRequired: false)] int? lookbackMinutes)
+    {
+        if (!ToolJson.TryTime(untilUtc, "untilUtc", out var until, out var error)) return error;
+        var segment = await store.GetSegmentAsync(segmentId);
+        if (segment is null) return ToolJson.Error($"Unknown segment '{segmentId}'.");
+        var lookback = Math.Clamp(lookbackMinutes ?? 30, 10, 180);
+        var from = until.AddMinutes(-lookback);
+
+        var drops = new List<SensorDrop>();
+        var sensors = (await store.ListSensorsOnSegmentAsync(segment.DistrictId, segment.Id)).Where(s => s.Metric == "pressure");
+        foreach (var sensor in sensors)
+        {
+            var readings = await store.GetReadingsAsync(sensor.Id, from, until);
+            if (readings.Count >= 2) drops.Add(new SensorDrop(sensor.Id, sensor.ChainageM, readings[0].Value, readings[^1].Value));
+        }
+        if (drops.Count == 0) return ToolJson.Error($"No pressure sensor on {segmentId} has readings in this window.");
+
+        var inlet = await InletFlowAsync(segment.DistrictId, from, until);
+        var sensorsUsed = drops.Select(d => new { d.SensorId, d.ChainageM, fromBar = d.FromBar, toBar = d.ToBar, dropBar = Math.Round(d.DropBar, 2) });
+        logger.LogInformation("estimate-leak-position {SegmentId} until {Until}", segmentId, until);
+
+        var estimate = LeakLocator.Estimate(drops, segment.LengthM);
+        if (estimate is null)
+            return ToolJson.Ok(new
+            {
+                segmentId, found = false, lookbackMinutes = lookback, sensors = sensorsUsed, inletFlow = inlet,
+                message = $"No pressure sensor on {segmentId} fell by at least {LeakLocator.MinimumDropBar} bar, so no leak position can be estimated here.",
+            });
+
+        return ToolJson.Ok(new
+        {
+            segmentId,
+            found = true,
+            lookbackMinutes = lookback,
+            method = estimate.Method,
+            estimatedChainageM = estimate.ChainageM,
+            uncertaintyM = estimate.UncertaintyM,
+            location = Geo.PointAt(segment, estimate.ChainageM),
+            sensors = sensorsUsed,
+            inletFlow = inlet,
+            note = "A search area for the crew, not an exact point: the real break is within uncertaintyM of the estimate.",
+        });
+    }
+
+    [Function(nameof(RankSegmentsByPressureDrop))]
+    public async Task<string> RankSegmentsByPressureDrop(
+        [McpToolTrigger("rank-segments-by-pressure-drop", "Ranks the pipe segments of a district by how far their pressure sensors fell between a moment and some minutes earlier, largest drop first. The leak is normally on the segment at the top. Use it to check whether a suspected segment is really where the pressure fell most.")]
+        ToolInvocationContext context,
+        [McpToolProperty("districtId", "District id, for example D-01", isRequired: true)] string districtId,
+        [McpToolProperty("untilUtc", "The moment to look at, ISO 8601 UTC. Normally the alarm time.", isRequired: true)] string untilUtc,
+        [McpToolProperty("lookbackMinutes", "Compare with this many minutes earlier. Default 30, between 10 and 180.", isRequired: false)] int? lookbackMinutes)
+    {
+        if (!ToolJson.TryTime(untilUtc, "untilUtc", out var until, out var error)) return error;
+        var lookback = Math.Clamp(lookbackMinutes ?? 30, 10, 180);
+
+        var sensors = (await store.ListSensorsAsync(districtId)).Where(s => s.Metric == "pressure").ToList();
+        if (sensors.Count == 0) return ToolJson.Error($"No pressure sensors found for district '{districtId}'.");
+        var segments = (await store.ListSegmentsAsync(districtId)).ToDictionary(s => s.Id);
+
+        var drops = new List<(Sensor Sensor, double DropBar)>();
+        foreach (var sensor in sensors)
+        {
+            var readings = await store.GetReadingsAsync(sensor.Id, until.AddMinutes(-lookback), until);
+            if (readings.Count >= 2) drops.Add((sensor, Math.Round(readings[0].Value - readings[^1].Value, 2)));
+        }
+
+        var ranking = drops
+            .GroupBy(d => d.Sensor.SegmentId)
+            .Select(g => new
+            {
+                segmentId = g.Key,
+                street = segments.GetValueOrDefault(g.Key)?.Street,
+                material = segments.GetValueOrDefault(g.Key)?.Material,
+                diameterMm = segments.GetValueOrDefault(g.Key)?.DiameterMm,
+                maxDropBar = g.Max(d => d.DropBar),
+                sensors = g.Select(d => new { id = d.Sensor.Id, chainageM = d.Sensor.ChainageM, dropBar = d.DropBar }),
+            })
+            .OrderByDescending(r => r.maxDropBar)
+            .ToList();
+        logger.LogInformation("rank-segments-by-pressure-drop {DistrictId} until {Until} -> top {Top}", districtId, until, ranking.FirstOrDefault()?.segmentId);
+
+        return ToolJson.Ok(new { districtId, untilUtc = until, lookbackMinutes = lookback, ranking });
+    }
+
+    [Function(nameof(ClassifySeverity))]
+    public async Task<string> ClassifySeverity(
+        [McpToolTrigger("classify-severity", "Classifies how serious a breach on a pipe segment is, S1 (critical) to S4 (minor), with the reasons, using the fixed rubric: breach type, customers served, critical customers (care homes, hospitals) and pipe diameter.")]
+        ToolInvocationContext context,
+        [McpToolProperty("segmentId", "Pipe segment id, for example SEG-0412", isRequired: true)] string segmentId,
+        [McpToolProperty("breachType", "burst or leak", isRequired: true)] string breachType)
+    {
+        var breach = breachType?.Trim().ToLowerInvariant();
+        if (breach is not ("burst" or "leak")) return ToolJson.Error("'breachType' must be 'burst' or 'leak'.");
+        var segment = await store.GetSegmentAsync(segmentId);
+        if (segment is null) return ToolJson.Error($"Unknown segment '{segmentId}'.");
+
+        var assessment = SeverityRubric.Classify(breach, segment.CustomersServed, segment.CriticalCustomers, segment.DiameterMm);
+        logger.LogInformation("classify-severity {SegmentId} {Breach} -> {Severity}", segmentId, breach, assessment.Severity);
+        return ToolJson.Ok(new { segmentId, breachType = breach, assessment.Severity, assessment.Reasons });
+    }
+
+    /// <summary>The district inlet flow now, and what is normal for that hour (from the usage profile).</summary>
+    private async Task<object?> InletFlowAsync(string districtId, DateTimeOffset from, DateTimeOffset until)
+    {
+        var flowSensor = (await store.ListSensorsAsync(districtId)).FirstOrDefault(s => s.Metric == "flow");
+        if (flowSensor is null) return null;
+        var readings = await store.GetReadingsAsync(flowSensor.Id, from, until);
+        if (readings.Count == 0) return null;
+
+        var profile = (await store.GetUsageProfilesAsync(districtId, LeakOpsTime.DayType(until)))
+            .FirstOrDefault(p => p.LocalHour == LeakOpsTime.ToLocal(until).Hour);
+        var observed = readings[^1].Value;
+        return new
+        {
+            sensorId = flowSensor.Id,
+            observedM3h = observed,
+            earlierM3h = readings[0].Value,
+            expectedAvgM3h = profile?.AvgFlowM3h,
+            p95M3h = profile?.P95FlowM3h,
+            excessOverExpectedM3h = profile is null ? (double?)null : Math.Round(observed - profile.AvgFlowM3h, 1),
+        };
+    }
+
     [Function(nameof(GetRepairProcedure))]
     public async Task<string> GetRepairProcedure(
         [McpToolTrigger("get-repair-procedure", "Gets the standard repair procedure for a pipe material, diameter and breach type: required technician certifications, parts (with conditions), equipment, estimated repair hours, and notes.")]
