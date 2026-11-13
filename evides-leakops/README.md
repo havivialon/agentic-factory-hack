@@ -35,10 +35,39 @@ MCP functions `7071` · Agent functions `7072` · Waterstoring `5080` · Workflo
 Copy `local.settings.sample.json` to `local.settings.json` in `src/LeakOps.Mcp` and `src/LeakOps.Agents` (git-ignored) and fill in the values.
 See `env.example` for the variable names.
 
-## Build
+## Build and test
 ```powershell
 dotnet build evides-leakops\LeakOps.slnx
+dotnet test --project evides-leakops\tests\LeakOps.Tests
 ```
+(`global.json` opts in to the Microsoft.Testing.Platform runner that xunit v3 needs on the .NET 10 SDK.)
+
+## Simulated data and seeding
+Static data lives in `data/*.json`. Sensor readings (10-minute interval), weather and usage profiles are **generated
+deterministically** from `data/simulation.json` when the seeder runs. All times are UTC (the Netherlands is UTC+1 in November).
+
+Two scripted scenarios (`data/scenarios.json`; the `groundTruth` part is for tests and evaluation only, agents never see it):
+
+| Scenario | District | Alarm time (UTC) | What the data shows |
+|---|---|---|---|
+| `scn-burst-cast-iron` | D-01 Spijkenisse-Noord | 2026-11-14 03:10 | PS-101 drops to 2.85 bar, night flow triples, -3 C frost, no planned works. Burst on SEG-0412 (1962 cast iron DN300, about 160 m from its start) |
+| `scn-false-alarm-planned-works` | D-02 Hoogvliet-Industrie | 2026-11-13 09:40 | PS-201 drops to 3.72 bar while inflow goes down. Planned work PW-7781 (valve replacement) is in progress |
+
+No sensor data exists after the alarm time, so agents cannot see the future. The roster is built so that the nearest on-shift
+technician (T-01) lacks the cast-iron certification, and the right answer is T-02.
+
+Seed into Cosmos DB (new database `LeakOpsDB`, 18 containers; the 4 run-time containers start empty):
+```powershell
+dotnet run --project evides-leakops\src\LeakOps.Seeder -- --dry-run     # validate and count only
+dotnet run --project evides-leakops\src\LeakOps.Seeder                  # upsert (safe to repeat)
+dotnet run --project evides-leakops\src\LeakOps.Seeder -- --reset       # drop and recreate LeakOpsDB
+```
+Uses `COSMOS_ENDPOINT` and `COSMOS_KEY` from the environment or the repo-root `.env`. It deliberately ignores
+`COSMOS_DATABASE_NAME` (the `.env` points at the tire-factory database) and refuses any database not named `LeakOps*`.
+
+Notes for querying (used from step 3):
+- `value` is a reserved word in Cosmos SQL: write `c["value"]`.
+- Timestamps are stored as UTC strings like `2026-11-14T03:10:00+00:00`. Use that exact format in query parameters.
 
 ## Status
-Step 0 (scaffold) done. Next: simulated data and Cosmos seeding.
+Steps 0 (scaffold) and 1 (data and seeding) done. Next: fake Waterstoring.nl.
