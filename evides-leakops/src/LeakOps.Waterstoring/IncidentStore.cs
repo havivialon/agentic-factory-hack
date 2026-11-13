@@ -42,6 +42,10 @@ public class IncidentStore(TimeProvider time)
             var messageEn = update.MessageEn ?? current.MessageEn;
             var eta = update.ExpectedResolutionUtc ?? current.ExpectedResolutionUtc;
 
+            // A repeated update (an agent retry) changes nothing and must not add a line to the public timeline.
+            if (status == current.Status && message == current.Message && messageEn == current.MessageEn && eta == current.ExpectedResolutionUtc)
+                return current;
+
             var updated = current with
             {
                 Status = status,

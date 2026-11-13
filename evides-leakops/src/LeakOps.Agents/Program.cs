@@ -33,5 +33,6 @@ builder.Services.AddSingleton<DiagnosticAgent>();
 builder.Services.AddSingleton<CommunicationsAgent>();
 builder.Services.AddSingleton<ResourceMatchmakerAgent>();
 builder.Services.AddSingleton<ProcurementAgent>();
+builder.Services.AddSingleton<SchedulingAgent>();
 
 builder.Build().Run();

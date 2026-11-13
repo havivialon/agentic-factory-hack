@@ -125,7 +125,7 @@ and work orders. Errors are returned as JSON (`{"error": ...}`) so an agent can 
 | | `create-purchase-order` | Order at the supplier, express option, approval above 2500 EUR; `purpose` urgent or replenishment (separate orders per incident and SKU) |
 | | `get-incident-package` | What an incident has already reserved and ordered, so a repeat run never counts twice |
 | Scheduling | `get-travel-estimate` | Travel time with optional stop (e.g. depot), depends on time of day |
-| | `create-work-order` | Builds the job package, computes arrival and completion, refuses uncertified technicians |
+| | `create-work-order` | Builds the job package, computes arrival and completion (travel, isolation, wait for parts, repair), refuses uncertified technicians |
 
 Run it locally (needs Azurite for the Functions host, and `local.settings.json` copied from `local.settings.sample.json`; the
 Cosmos key is taken from the environment, so it never has to be written to a file):
@@ -156,7 +156,7 @@ connects to the MCP server and gets **only the tools on its allow-list**, and re
 | 3 Communications | `POST /api/agents/communications` (body: `{ "report": <diagnostic report> }`, not for a report that needs review) | done |
 | 4 Resource Matchmaker | `POST /api/agents/matchmaker` (body: `{ "report": <diagnostic report> }`, not for a report that needs review) | done |
 | 5 Procurement | `POST /api/agents/procurement` (body: `{ "report": <diagnostic report> }`, not for a report that needs review) | done |
-| 6 Scheduling | step 9 | planned |
+| 6 Scheduling | `POST /api/agents/scheduling` (body: `{ "report": ..., "match": <matchmaker result>, "package": <procurement result> }`) | done |
 
 **Triage** is read-only (5 tools: sensors, readings, planned works, weather, usage). The model proposes a verdict; deterministic
 rules in `Contracts/Logic/TriageRules.cs` decide what is accepted: the alarm identity comes from the alarm, confidence stays in
@@ -208,6 +208,22 @@ counted, so nothing is reserved or ordered double. The `summary` is written by t
 what is short and when the order arrives, what is being restocked, what is a contingency); the model's `rationale` is kept apart.
 `packageComplete` is false while anything is short, so the Scheduling agent knows the package is not complete at departure.
 
+**Scheduling** needs a technician and a package that nobody has to review (otherwise 422). Code works out the whole schedule from
+tool facts in `Contracts/Logic/SchedulingRules.cs`; the model only writes the briefing for the technician's phone, from the finished
+schedule. The technician leaves 10 minutes after the alarm, drives through the warehouse that holds the reserved items (the one
+with the excavator; 15 min loading plus 15 min to hitch the excavator; `get-travel-estimate` handles night, normal and rush-hour
+speeds) and on to the site. Closing the valves takes 0.1 min per turn plus 5 min between valves and 15 min extra for a valve not
+operated for over two years. Then the repair hours of the procedure. A part that is still on order has to arrive and be fitted
+(60 min) before the repair can finish, which can push the completion out. Residents are told completion plus 60 min for flushing
+and disinfection, rounded up to the quarter hour; when a missing part is not ordered or its order waits for approval, no time is
+promised at all. The briefing is checked: it must name the street and every valve to close and may only mention times that are
+in the schedule, otherwise a briefing built by the rules is sent (`usedFallbackBriefing`). The agent then calls
+`create-work-order` (arrival and completion computed there are compared with the schedule) and PATCHes the incident on
+Waterstoring: status `repair_planned`, the expected resolution time and a fixed Dutch and English text ("we verwachten ... rond
+18:15 ... dit is een schatting"). The text is a template, so it can never promise more than the schedule. Repeating the call
+changes nothing, also not the public timeline. If Waterstoring does not know the incident yet the result is 502 `publish_failed`
+(run Communications first). `timeBreakdown` shows every step that adds up to the times.
+
 Measured against the live model (gpt-5.4): Triage burst 5/5 `genuine_leak` (0.96-0.98), planned-works false alarm 10/10
 `false_alarm` (0.94-0.96), unknown sensor `uncertain`, a subtle prompt injection in the alarm text ignored. About 15 s per Triage
 run. Diagnostic: 8 of 8 runs identical (SEG-0412, 174 m from the start with ±54 m against a simulated break at 160 m, burst, S1,
@@ -217,7 +233,9 @@ no repair time promised; the rules' rejection, retry and safe-template paths are
 Resource Matchmaker: 6 of 6 runs chose T-02 (6 min away) with T-05 as backup and no corrections, about 22 s per run; a PVC repair
 at night correctly found nobody certified on shift. Procurement: for the burst the package was always the same (9 items reserved,
 one DN300 coupling short and ordered express for 675 EUR, a 4,110 EUR restock of clamps held for approval, the gate valve kept as
-a contingency); a repeat run changed nothing. About 26 s per run.
+a contingency); a repeat run changed nothing. About 26 s per run. Scheduling: 5 of 5 briefings accepted on the first attempt (about
+6 s each); for the burst the technician T-02 leaves at 04:20 local, reaches the site at 04:57, is done at 17:10 (the express
+coupling arrives at 16:10) and residents are told 18:15; the whole chain Triage to Scheduling takes about 1.5 minutes.
 
 Run it locally (three more terminals next to Azurite and the MCP host from the section above). The agents need a Foundry token
 for the tenant of the project. If your Azure CLI default account is in another tenant, sign in once with a separate profile so the
@@ -237,4 +255,4 @@ Credentials: in Azure the app's managed identity is used; locally the Azure CLI 
 `AZURE_AI_PROJECT_ENDPOINT`, `MODEL_DEPLOYMENT_NAME` (default `gpt-5.4`), `MCP_SERVER_URL`, `MCP_AUTH_KEY`, `AZURE_TENANT_ID`.
 
 ## Status
-Steps 0 to 8 done (scaffold, data and seeding, fake Waterstoring.nl, MCP functions, agent runtime, Triage, Diagnostic, Communications, Resource Matchmaker and Procurement agents). Next: Scheduling agent.
+Steps 0 to 9 done (scaffold, data and seeding, fake Waterstoring.nl, MCP functions, agent runtime, and all six agents: Triage, Diagnostic, Communications, Resource Matchmaker, Procurement and Scheduling). Next: the workflow host that runs them in order.

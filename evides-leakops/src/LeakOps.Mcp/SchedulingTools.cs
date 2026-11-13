@@ -74,6 +74,7 @@ public class SchedulingTools(LeakOpsStore store, ILogger<SchedulingTools> logger
         [McpToolProperty("summary", "One or two sentences describing the job for the technician", isRequired: true)] string summary,
         [McpToolProperty("breachType", "burst or leak. Default burst.", isRequired: false)] string? breachType,
         [McpToolProperty("isolationMinutes", "Minutes needed to close the isolation valves on site. Default 0.", isRequired: false)] int? isolationMinutes,
+        [McpToolProperty("partsWaitMinutes", "Extra minutes the repair has to wait for a part that is still on order, counted after the normal repair time. Default 0.", isRequired: false)] int? partsWaitMinutes,
         [McpToolProperty("repairHours", "Repair duration in hours. Default: the estimate of the repair procedure.", isRequired: false)] double? repairHours,
         [McpToolProperty("notes", "Extra notes for the technician", isRequired: false)] string? notes)
     {
@@ -107,8 +108,9 @@ public class SchedulingTools(LeakOpsStore store, ILogger<SchedulingTools> logger
         var now = LeakOpsTime.Utc(start);
         var repair = repairHours ?? procedure.EstimatedRepairHours;
         var isolation = Math.Max(0, isolationMinutes ?? 0);
+        var wait = Math.Max(0, partsWaitMinutes ?? 0);
         var arrival = now.AddMinutes(travelMinutes.Value);
-        var completion = arrival.AddMinutes(isolation).AddHours(repair);
+        var completion = arrival.AddMinutes(isolation + wait).AddHours(repair);
 
         var workOrder = new WorkOrder(
             Id: $"WO-{incidentId}",
@@ -129,6 +131,7 @@ public class SchedulingTools(LeakOpsStore store, ILogger<SchedulingTools> logger
             ScheduledStartUtc: now,
             TravelMinutes: travelMinutes.Value,
             IsolationMinutes: isolation,
+            PartsWaitMinutes: wait,
             RepairHours: repair,
             ExpectedArrivalUtc: arrival,
             ExpectedCompletionUtc: completion,

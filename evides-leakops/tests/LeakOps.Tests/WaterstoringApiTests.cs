@@ -83,6 +83,21 @@ public class WaterstoringApiTests
     }
 
     [Fact]
+    public async Task Repeating_the_same_patch_does_not_add_to_the_timeline()
+    {
+        using var factory = new WebApplicationFactory<Program>();
+        var client = NewClient(factory);
+        await client.PostAsJsonAsync("/api/incidents", Sample());
+        var update = new WaterstoringIncidentUpdate(WaterstoringStatus.RepairPlanned, "Monteur ingepland.", null, new DateTimeOffset(2026, 11, 14, 17, 15, 0, TimeSpan.Zero));
+
+        await client.PatchAsJsonAsync("/api/incidents/INC-1", update);
+        var again = await client.PatchAsJsonAsync("/api/incidents/INC-1", update);
+
+        var incident = (await again.Content.ReadFromJsonAsync<WaterstoringIncident>())!;
+        Assert.Equal(2, incident.Timeline.Count);   // the sample incident plus one real change
+    }
+
+    [Fact]
     public async Task Patch_rejects_unknown_incident_and_invalid_status()
     {
         using var factory = new WebApplicationFactory<Program>();

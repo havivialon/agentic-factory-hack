@@ -51,6 +51,7 @@ public record WorkOrder(
     DateTimeOffset ScheduledStartUtc,                   // when the technician leaves
     int TravelMinutes,
     int IsolationMinutes,
+    int PartsWaitMinutes,                               // extra waiting for a part that is still on order; 0 when the package is complete
     double RepairHours,
     DateTimeOffset ExpectedArrivalUtc,
     DateTimeOffset ExpectedCompletionUtc,

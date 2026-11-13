@@ -121,7 +121,7 @@ public static class DiagnosticRules
         return ordered.Select((id, index) =>
         {
             var v = known[id];
-            return new IsolationStep(index + 1, id, "close", v.TurnsToClose, v.Status, v.Location);
+            return new IsolationStep(index + 1, id, "close", v.TurnsToClose, v.Status, v.Location, v.LastOperatedUtc);
         }).ToList();
     }
 }

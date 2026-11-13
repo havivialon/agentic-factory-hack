@@ -62,7 +62,7 @@ public record IsolationValveInfo(
     GeoPoint Location,
     double DistanceAlongPipeM);
 
-public record IsolationStep(int Order, string ValveId, string Action, int TurnsToClose, string Status, GeoPoint Location);
+public record IsolationStep(int Order, string ValveId, string Action, int TurnsToClose, string Status, GeoPoint Location, DateTimeOffset? LastOperatedUtc = null);
 
 /// <summary>Output of the Diagnostic agent: where the breach is, what the pipe is, how serious it is and how to isolate it.</summary>
 public record DiagnosticReport(
@@ -194,4 +194,34 @@ public record ProcurementResult(
     IReadOnlyList<string> Warnings,
     bool NeedsReview,                      // true when the repair cannot be equipped without a person deciding
     IReadOnlyList<string> ReviewReasons);
+
+// ---- Scheduling agent -------------------------------------------------------------------------------------------
+
+/// <summary>Input of the Scheduling agent: the diagnosis, the technician the Matchmaker chose and the package Procurement reserved.</summary>
+public record SchedulingRequest(DiagnosticReport Report, ResourceMatch Match, ProcurementResult Package);
+
+/// <summary>What the model writes: the briefing for the technician's phone. Every time, place and number in the schedule comes from code.</summary>
+public record SchedulingJudgement(string Briefing);
+
+/// <summary>One stop on the technician's route.</summary>
+public record RouteStop(
+    string Name,
+    string Kind,                     // start | depot | site
+    GeoPoint Location,
+    DateTimeOffset ArriveUtc,
+    DateTimeOffset DepartUtc,        // equals ArriveUtc for the start and the site
+    string? Note);
+
+/// <summary>Output of the Scheduling agent: the work order sent to the technician and the expected resolution time shown to residents.</summary>
+public record SchedulingResult(
+    string IncidentId,
+    WorkOrder WorkOrder,
+    IReadOnlyList<RouteStop> Route,
+    string Briefing,
+    bool UsedFallbackBriefing,             // true when the model's briefing contradicted the schedule and the rules' text was sent instead
+    IReadOnlyList<string> BriefingIssues,
+    IReadOnlyList<string> TimeBreakdown,   // how the completion time and the public expected resolution time add up
+    DateTimeOffset? ExpectedResolutionUtc, // what residents are told; null when it cannot be promised yet
+    WaterstoringIncident Published,
+    IReadOnlyList<string> Warnings);
 

@@ -8,7 +8,7 @@ using Microsoft.Extensions.Logging;
 namespace LeakOps.Agents;
 
 /// <summary>HTTP entry points of the Agents function app. One function per agent; the workflow host calls them in order.</summary>
-public class AgentFunctions(TriageAgent triage, DiagnosticAgent diagnostic, CommunicationsAgent communications, ResourceMatchmakerAgent matchmaker, ProcurementAgent procurement, ILogger<AgentFunctions> logger)
+public class AgentFunctions(TriageAgent triage, DiagnosticAgent diagnostic, CommunicationsAgent communications, ResourceMatchmakerAgent matchmaker, ProcurementAgent procurement, SchedulingAgent scheduling, ILogger<AgentFunctions> logger)
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
@@ -118,6 +118,35 @@ public class AgentFunctions(TriageAgent triage, DiagnosticAgent diagnostic, Comm
             });
 
         return await RunAsync("Procurement", report.AlarmId, () => procurement.ProcureAsync(body!, cancellationToken));
+    }
+
+    /// <summary>POST /api/agents/scheduling with { report, match, package }; creates the work order and updates Waterstoring. Needs a technician and a package nobody has to review.</summary>
+    [Function("Scheduling")]
+    public async Task<IActionResult> Scheduling(
+        [HttpTrigger(AuthorizationLevel.Function, "post", Route = "agents/scheduling")] HttpRequest request,
+        CancellationToken cancellationToken)
+    {
+        var (body, bad) = await ReadBodyAsync<SchedulingRequest>(request, cancellationToken);
+        if (bad is not null) return bad;
+
+        var report = body?.Report;
+        if (report is null || body!.Match is null || body.Package is null)
+            return new BadRequestObjectResult(new { error = "report, match and package are required." });
+        if (string.IsNullOrWhiteSpace(report.AlarmId) || string.IsNullOrWhiteSpace(report.SegmentId) || string.IsNullOrWhiteSpace(report.Street)
+            || string.IsNullOrWhiteSpace(report.Severity) || string.IsNullOrWhiteSpace(report.BreachType) || report.TriggeredAtUtc == default
+            || report.IsolationPlan is null || report.Location is null)
+            return new BadRequestObjectResult(new { error = "report needs alarmId, segmentId, street, severity, breachType, triggeredAtUtc, location and isolationPlan." });
+        if (body.Match.AlarmId != report.AlarmId || body.Package.AlarmId != report.AlarmId)
+            return new BadRequestObjectResult(new { error = "report, match and package belong to different alarms." });
+
+        var blockers = new List<string>();
+        if (report.NeedsReview) blockers.Add("the diagnosis needs review");
+        if (body.Match.NeedsReview || body.Match.Primary is null) blockers.Add("no technician has been matched: " + string.Join(" ", body.Match.ReviewReasons));
+        if (body.Package.NeedsReview) blockers.Add("the parts and equipment cannot be reserved: " + string.Join(" ", body.Package.ReviewReasons));
+        if (blockers.Count > 0)
+            return new UnprocessableEntityObjectResult(new { error = "Nothing is scheduled: a person has to decide first.", reasons = blockers });
+
+        return await RunAsync("Scheduling", report.AlarmId, () => scheduling.ScheduleAsync(body, cancellationToken));
     }
 
     private async Task<IActionResult> RunAsync<T>(string agent, string alarmId, Func<Task<AgentResult<T>>> run)
