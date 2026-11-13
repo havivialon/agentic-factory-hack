@@ -13,13 +13,36 @@ All data is **simulated**. The Waterstoring site in this folder is a **fake**, n
 | 5 | Procurement | Parts and equipment reservation, purchase order if stock is low |
 | 6 | Scheduling | Travel and repair time, work order, ETA update on Waterstoring |
 
+The goal of this demo is to show how Evides can work with AI and **Microsoft Foundry**: the six agents are real Foundry agents (visible,
+testable, traced and evaluated in the portal at https://ai.azure.com), they use tools through an MCP server, and code keeps the
+facts and the rules. **For the demo script, the portal tour and troubleshooting see [DEMO.md](DEMO.md).**
+
+```mermaid
+flowchart LR
+    Op[Operator console<br/>workflow host] -->|alarm| A[Agents app<br/>Azure Functions]
+    A -->|call agent by name| F[Microsoft Foundry project<br/>6 agents + gpt-5.4<br/>guardrails, tracing, evaluations]
+    F -->|MCP tools, server-side| M[MCP server<br/>Azure Functions, 19 tools]
+    A -->|rule checks: same tools| M
+    M --> C[(Cosmos DB<br/>simulated data)]
+    A -->|publish / ETA| W[Fake Waterstoring.nl]
+    W --> C
+    F -.->|traces| I[Application Insights]
+    A -.-> I
+```
+Foundry runs an agent and its MCP tool calls; the Agents app checks every answer with code and calls the same MCP tools itself for the
+facts the rules compare the answer with. Nothing the model says is published, booked or dispatched without that check.
+
 ## Layout
 | Path | Purpose |
 |---|---|
 | `src/LeakOps.Contracts` | Shared records |
 | `src/LeakOps.Seeder` | Seeds Cosmos DB `LeakOpsDB` |
 | `src/LeakOps.Mcp` | Azure Functions app exposing the MCP tools |
-| `src/LeakOps.Agents` | Azure Functions app with the six agent HTTP functions |
+| `src/LeakOps.Agents` | Azure Functions app with the six agent HTTP functions; calls the agents registered in Foundry |
+| `src/LeakOps.AgentRegistry` | Console tool that creates or updates the six agents in the Foundry project (instructions, tools, answer schema) |
+| `evals/` | Foundry evaluation dataset (`leakops-evals.json`) and runner (`run-evals.ps1`) |
+| `deploy/` | Bicep and scripts: deploy, scale the web plan, tear down |
+| `DEMO.md` | Demo runbook: storyline, portal tour, troubleshooting |
 | `src/LeakOps.Waterstoring` | Fake Waterstoring.nl (ingest API + public map) |
 | `src/LeakOps.Workflow` | ASP.NET workflow host: runs the six agents in order, streams progress (SSE), operator console |
 | `src/LeakOps.AppHost` | Aspire AppHost: starts everything locally with one command |
@@ -48,7 +71,7 @@ Three layers of checks, from fast to thorough:
 |---|---|---|
 | `tests/LeakOps.Tests` (about 170 tests, 3 s) | The seed data; every rules class (triage, diagnosis, communications, matchmaker, procurement, scheduling) including the cases where the model is wrong; the workflow runner (false alarm, needs review, failures, cancel); the Waterstoring API; the workflow host over HTTP with a fake in place of the agents (SSE format, validation, no ground truth leak) | nothing |
 | `scripts/mcp-smoke.cs` | The MCP tools walked through the burst scenario the way the agents use them, plus tool guardrails | MCP host and Cosmos |
-| `scripts/e2e.cs` (46 checks, about 5 min) | The real model end to end through the workflow host: false alarm closes; the burst finishes and its results are compared with the simulation's ground truth (segment, position within the stated uncertainty, severity, T-02 chosen and T-01/T-03/T-04 ruled out for the right reasons, the 8 t excavator, approval above 2,500 EUR, schedule maths, what residents read); the same alarm again changes nothing; guardrails (unknown sensor, injection in the alarm text, refusal paths, API key, no ground truth in the operator page) | everything running (AppHost) and `--reset-runtime` first |
+| `scripts/e2e.cs` (48 checks, about 3 min) | The real model end to end through the workflow host: false alarm closes; the burst finishes and its results are compared with the simulation's ground truth (segment, position within the stated uncertainty, severity, T-02 chosen and T-01/T-03/T-04 ruled out for the right reasons, the 8 t excavator, approval above 2,500 EUR, schedule maths, what residents read); the same alarm again changes nothing; guardrails (unknown sensor, injection in the alarm text, refusal paths, API key, no ground truth in the operator page) | everything running (AppHost) and `--reset-runtime` first |
 
 ```powershell
 dotnet run --project evides-leakops\src\LeakOps.Seeder -- --reset-runtime
@@ -159,10 +182,15 @@ Shared rules (time handling, geometry, travel model, roster check, stock view, p
 
 ## Agents (`src/LeakOps.Agents`)
 An Azure Functions app with one HTTP function per agent, all on one shared runtime (`LeakOpsAgentRuntime`). Agents are
-**code-defined Foundry agents**: `AIProjectClient.AsAIAgent(model, name, instructions, tools)` from `Azure.AI.Projects` and
-`Microsoft.Agents.AI.Foundry`. No server-side agent resource is created; the app owns model, instructions and tools. Each agent
-connects to the MCP server and gets **only the tools on its allow-list**, and returns a schema-checked JSON answer plus a trace
-(tool calls, tokens, duration) so a person can see how the answer came about.
+**Foundry-registered agents**: `LeakOps.AgentRegistry` creates them in the Foundry project (name, instructions, model, the MCP tool
+with this agent's allow-list, and the JSON schema of the answer; a new version only when something changed), and the runtime calls
+them by name: `AIProjectClient.AsAIAgent(new AgentReference(name))` from `Azure.AI.Projects` and `Microsoft.Agents.AI.Foundry`.
+Foundry calls the MCP tools itself (server-side, through the project connection `leakops-mcp`), so each agent gets **only the tools
+on its allow-list**. The answer is schema-checked JSON plus a trace (tool calls, tokens, duration) so a person can see how it came
+about. The instructions and allow-lists live in the agent classes (`TriageAgent.Spec`, ...) and are collected in `AgentCatalog.cs`;
+change one, run `deploy.ps1` (or `dotnet run --project src/LeakOps.AgentRegistry`) and the new version is registered.
+`MaxOutputTokens` is capped at 8000 per call: without a cap Foundry reserves a very large output budget per call against the
+deployment's tokens-per-minute limit and runs one after another get HTTP 429.
 
 | Agent | Function | Status |
 |---|---|---|
@@ -252,13 +280,16 @@ a contingency); a repeat run changed nothing. About 26 s per run. Scheduling: 5 
 6 s each); for the burst the technician T-02 leaves at 04:20 local, reaches the site at 04:57, is done at 17:10 (the express
 coupling arrives at 16:10) and residents are told 18:15; the whole chain Triage to Scheduling takes about 1.5 minutes.
 
-Run it locally (three more terminals next to Azurite and the MCP host from the section above). The agents need a Foundry token
+Run it locally (three more terminals next to Azurite and the MCP host from the section above). Note that the agents live in Foundry
+and Foundry calls the MCP tools from the cloud, so the agent tools always come from the **deployed** MCP server (the one in the
+agent definitions); the local MCP host only serves the "(rules)" fact calls of your local Agents app. Deploy first (see Deploy to
+Azure) and point `AZURE_AI_PROJECT_ENDPOINT` at the deployed project. The agents need a Foundry token
 for the tenant of the project. If your Azure CLI default account is in another tenant, sign in once with a separate profile so the
 default login stays untouched:
 ```powershell
 $env:AZURE_CONFIG_DIR = "$HOME\.azure-macaw"; az login --tenant <tenant-id> --use-device-code   # once
 # then, in the terminal that starts the agents (settings come from the environment; nothing secret is written to a file):
-foreach ($l in Get-Content .env) { if ($l -match '^AZURE_AI_PROJECT_ENDPOINT=(.*)$') { $env:AZURE_AI_PROJECT_ENDPOINT = $Matches[1].Trim().Trim('"') } }
+$env:AZURE_AI_PROJECT_ENDPOINT = "https://evides-foundry-<suffix>.services.ai.azure.com/api/projects/evides-leakops"   # printed by deploy.ps1
 $env:AZURE_TENANT_ID = "<tenant-id>"; $env:AZURE_CONFIG_DIR = "$HOME\.azure-macaw"
 cd evides-leakops\src\LeakOps.Agents; func start --port 7072
 ```
@@ -323,44 +354,52 @@ waits until Azurite really listens, passes the settings on and shows everything 
 from the environment or the repo-root `.env` (the key is a masked parameter and is never written to a file).
 ```powershell
 $env:AZURE_TENANT_ID = "<tenant-id>"; $env:AZURE_CONFIG_DIR = "$HOME\.azure-macaw"   # only when the Foundry project is not in your default az tenant
+$env:AZURE_AI_PROJECT_ENDPOINT = "https://evides-foundry-<suffix>.services.ai.azure.com/api/projects/evides-leakops"   # not the old .env value
 dotnet run --project evides-leakops\src\LeakOps.AppHost
 ```
 Then open http://localhost:5090 (operator console) and http://localhost:5080/evides (what residents see). Reservations and orders
 stay in Cosmos between runs; clear them with `dotnet run --project evides-leakops\src\LeakOps.Seeder -- --reset-runtime`, and
-clear the fake site with `POST /api/admin/reset` (or restart it). Measured: the burst takes about 80 s from alarm to work order,
-the false alarm about 20 s.
+clear the fake site with `POST /api/admin/reset` (or restart it). Measured: the burst takes about 50 s from alarm to work order
+when the agents run in Foundry, the false alarm about 20 s.
 
 ## Deploy to Azure (`deploy/`)
-Everything runs in the existing resource group `rg-tire-factory-demo` of the Visual Studio subscription, next to what the earlier
-deployment there provides (Cosmos DB, storage account, Application Insights, the Foundry project with gpt-5.4), which it reuses.
+The demo has its **own resource group `rg-evides-ai-demo`** (Sweden Central; the web plan in West Europe), separate from the
+tire-factory demo, in the Visual Studio subscription. Everything is created by `deploy/main.bicep` and tagged `project=evides-leakops`.
+The suffix in the names (for example `88546e`) is derived from the subscription and resource group, so it is the same on every run.
 
-| New resource | What | Cost per month (EUR, retail) |
+| Resource | What | Cost per month (EUR, retail) |
 |---|---|---|
+| `evides-foundry-<suffix>` | Microsoft Foundry resource and project `evides-leakops`: gpt-5.4 deployment (Global Standard, 150k tokens/min), project connections `leakops-mcp` (MCP key) and `evides-appinsights` (tracing), the six agents (registered by the script) | no fixed cost; pay per token |
 | `leakops-mcp-<suffix>`, `leakops-agents-<suffix>` | Azure Functions, **Flex Consumption**, .NET 10, no always-ready instances, scale-out capped at 10 | about 0 (free monthly grant; you pay only while a function runs) |
 | `leakops-web-plan-<suffix>` | App Service plan, Linux **Basic B1**, West Europe | 11.80 (0.0162 per hour); 0 on Free F1 |
 | `leakops-waterstoring-<suffix>`, `leakops-workflow-<suffix>` | Web apps on that plan (fake Waterstoring.nl; workflow host with the operator console) | included in the plan |
-| Cosmos container `WaterstoringIncidents`, two blob containers | In the existing Cosmos account (serverless) and storage account | cents |
-| Model | gpt-5.4 on the existing Foundry project. One full run measured at 40,938 tokens in and 2,827 out | a few cents to about 0.15 per run (check Cost Management for the real rate) |
+| `evides-cosmos-<suffix>` | Cosmos DB serverless, database `LeakOpsDB` (19 containers, seeded) | cents at this scale |
+| `evidessa<suffix>`, `evides-logs-<suffix>`, `evides-appinsights-<suffix>` | Storage (no shared keys), Log Analytics, Application Insights | cents to a few euros |
+| Model | gpt-5.4: one full six-agent run is about 22,000 tokens in and 3,000 out | about 0.02 per run |
 
-There is no Container Registry, Key Vault or network resource. Every new resource is tagged `project=evides-leakops`.
+There is no Container Registry, Key Vault or network resource. Budget: a Visual Studio subscription with about 100 EUR a month; the
+standing cost is the web plan (11.80, or 0 on F1) plus cents. Run `scale-web.ps1 -Sku F1` when you are not demoing.
 
 ```powershell
 $env:AZURE_CONFIG_DIR = "$HOME\.azure-macaw"            # when your default az login is another tenant (see above)
-./evides-leakops/deploy/deploy.ps1 -WhatIfOnly          # shows what would be created, changes nothing
-./evides-leakops/deploy/deploy.ps1                      # deploys infrastructure, publishes the code, sets the keys, checks health
+./evides-leakops/deploy/deploy.ps1 -WhatIfOnly          # creates only the empty resource group and stops
+./evides-leakops/deploy/deploy.ps1                      # deploys infrastructure, seeds the data, publishes the code, sets the keys, registers the Foundry agents, checks health
 ./evides-leakops/deploy/deploy.ps1 -RunE2E              # same, then runs the 48 end-to-end checks against Azure
+./evides-leakops/evals/run-evals.ps1                    # Foundry evaluations (results appear in the portal)
 ./evides-leakops/deploy/scale-web.ps1 -Sku F1           # not demoing: web plan to free (B1 again with -Sku B1)
-./evides-leakops/deploy/teardown.ps1 -WhatIf            # what would be removed; without -WhatIf it removes it
+./evides-leakops/deploy/teardown.ps1 -WhatIf            # what would be removed (the whole resource group, then the Foundry purge); without -WhatIf it removes it
 ```
-`deploy.ps1` needs PowerShell 7 and is safe to run again: keys that exist are kept. If the Basic plan has no capacity in the default
-region (it happened in Sweden Central) use `-WebLocation northeurope`. A new web app may answer 503 for a minute; the script retries.
+`deploy.ps1` needs PowerShell 7 and is safe to run again: keys that exist are kept, an agent only gets a new version when its definition changed. A full
+deployment takes 15 to 20 minutes. If the Basic plan has no capacity in the web region use `-WebLocation northeurope`. A new web app may answer 503 for a minute; the script retries.
+`remove-from-tire-factory.ps1` was a one-off cleanup of the first deployment, which shared the tire-factory resource group; it has been run.
 
 How it is secured:
-- **No keys between Azure services:** the MCP app and the Waterstoring site reach Cosmos with their managed identity (Cosmos data role), the function apps reach storage with theirs, and the agents reach Foundry with theirs (role Foundry User).
-- **Keys where a key is needed**, generated by the script and kept only in app settings (never in git): the `mcp_extension` key from the agents to the MCP tools, a function key from the workflow host to the agents, an API key from the agents to the Waterstoring ingest API, and an **operator key** the console asks for once (kept in that browser tab only). The workflow API refuses calls without it; `/health`, the page and `/api/config` stay open so the page can ask for the key.
+- **No keys between Azure services:** the MCP app and the Waterstoring site reach Cosmos with their managed identity (Cosmos data role), the function apps reach storage with theirs (shared-key access is switched off), and the agents reach Foundry with theirs (role Foundry User). The Foundry resource has local (key) authentication disabled: Entra ID only. The person who deploys gets Foundry User too, to register agents and use the portal.
+- **Keys where a key is needed**, generated by the script and kept only in app settings (never in git): the `mcp_extension` key that Foundry (through the project connection `leakops-mcp`) and the agents app send to the MCP tools, a function key from the workflow host to the agents, an API key from the agents to the Waterstoring ingest API, and an **operator key** the console asks for once (kept in that browser tab only). The workflow API refuses calls without it; `/health`, the page and `/api/config` stay open so the page can ask for the key.
 - **Residents' page is public** (that is the point of it); writing needs the API key.
-- HTTPS only, TLS 1.2, FTP off, health check on the web apps. Telemetry from all four apps goes to the existing Application Insights.
-- Show the operator key: `az webapp config appsettings list -g rg-tire-factory-demo -n leakops-workflow-<suffix> --query "[?name=='OPERATOR_KEY'].value" -o tsv`
+- **Guardrails in Foundry:** the gpt-5.4 deployment uses the `Microsoft.DefaultV2` content filter, which blocks jailbreak and indirect-attack prompts (prompt shields) before the model sees them.
+- HTTPS only, TLS 1.2, FTP off, health check on the web apps. Telemetry from all four apps goes to this demo's Application Insights, which the Foundry project uses for tracing.
+- Show the operator key: `az webapp config appsettings list -g rg-evides-ai-demo -n leakops-workflow-<suffix> --query "[?name=='OPERATOR_KEY'].value" -o tsv`
 
 Run the end-to-end script by hand against Azure: set `WORKFLOW_URL`, `WATERSTORING_URL`, `AGENTS_URL`, `WATERSTORING_API_KEY`, `OPERATOR_KEY`
 and `AGENTS_FUNCTION_KEY` (the values are in the app settings), run `--reset-runtime` first, then `dotnet run evides-leakops\scripts\e2e.cs`.
@@ -368,4 +407,4 @@ The first request after a quiet period is slow (Flex Consumption cold start and 
 restart or a new deployment does not empty the residents' page.
 
 ## Status
-Steps 0 to 12 done (scaffold, data and seeding, fake Waterstoring.nl, MCP functions, agent runtime, the six agents, the workflow host with its operator console, the Aspire AppHost, end-to-end verification with guardrails, and the Azure deployment with managed identities, verified end to end in Azure). Next: documentation and the demo runbook (step 13).
+All steps done: the six agents run as Foundry agents in their own resource group `rg-evides-ai-demo`, deployed and verified end to end in Azure (48 of 48 checks), with Foundry tracing and evaluations (Triage 4 of 4, Diagnostic 1 of 1) and the Foundry content filter in front of the model. Demo script and troubleshooting: [DEMO.md](DEMO.md).
