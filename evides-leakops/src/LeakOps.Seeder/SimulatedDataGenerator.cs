@@ -1,12 +1,11 @@
 using LeakOps.Contracts;
+using LeakOps.Contracts.Logic;
 
 namespace LeakOps.Seeder;
 
 /// <summary>Deterministic generator for sensor readings, weather and usage profiles (same input = same output).</summary>
 public static class SimulatedDataGenerator
 {
-    // November in the Netherlands is UTC+1. Fixed on purpose, so results do not depend on the machine's time zone.
-    public const int LocalOffsetHours = 1;
     public const int ReadingIntervalMinutes = 10;
 
     // Demand factor (0..1) per LOCAL hour of the day.
@@ -15,16 +14,13 @@ public static class SimulatedDataGenerator
     private static readonly double[] Weekend =
         [0.34, 0.30, 0.27, 0.27, 0.30, 0.38, 0.50, 0.70, 0.90, 1.00, 0.95, 0.85, 0.80, 0.75, 0.70, 0.70, 0.75, 0.85, 0.90, 0.85, 0.72, 0.60, 0.50, 0.40];
 
-    public static string DayType(DateTimeOffset utc) =>
-        utc.AddHours(LocalOffsetHours).DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday ? "weekend" : "weekday";
-
     public static double[] Profile(string dayType) => dayType == "weekend" ? Weekend : Weekday;
 
     /// <summary>Demand factor at a moment in time, linearly interpolated between the hourly values.</summary>
     public static double DemandFactor(DateTimeOffset utc)
     {
-        var local = utc.AddHours(LocalOffsetHours);
-        var profile = Profile(DayType(utc));
+        var local = LeakOpsTime.ToLocal(utc);
+        var profile = Profile(LeakOpsTime.DayType(utc));
         var hour = local.Hour;
         var fraction = local.Minute / 60.0;
         return profile[hour] + (profile[(hour + 1) % 24] - profile[hour]) * fraction;
@@ -75,7 +71,7 @@ public static class SimulatedDataGenerator
             for (var t = first; t <= window.EndUtc; t = t.AddHours(1))
             {
                 var progress = (t - window.StartUtc) / (window.EndUtc - window.StartUtc);
-                var localHour = t.AddHours(LocalOffsetHours).Hour;
+                var localHour = LeakOpsTime.ToLocal(t).Hour;
                 var temperature = window.StartTempC + (window.EndTempC - window.StartTempC) * progress
                                   + 1.2 * Math.Sin(2 * Math.PI * (localHour - 9) / 24.0);
                 var rain = window.Rain.Where(r => t >= r.FromUtc && t < r.ToUtc).Sum(r => r.MmPerHour);

@@ -2,14 +2,17 @@ using LeakOps.Contracts;
 using LeakOps.Seeder;
 using Microsoft.Azure.Cosmos;
 
-// Usage: dotnet run --project src/LeakOps.Seeder -- [--dry-run] [--reset] [--data <folder>] [--database <name>]
-//   --dry-run   load and generate the data, print counts, do not touch Cosmos DB
-//   --reset     delete the database first (only allowed for a database named like LeakOps*)
+// Usage: dotnet run --project src/LeakOps.Seeder -- [--dry-run] [--reset] [--reset-runtime] [--data <folder>] [--database <name>]
+//   --dry-run         load and generate the data, print counts, do not touch Cosmos DB
+//   --reset           delete the database first (only allowed for a database named like LeakOps*)
+//   --reset-runtime   after seeding, also empty the run-time containers (incidents, work orders, purchase orders, reservations).
+//                     Seeding itself already puts the stock reservations back to zero, so this gives a clean demo state.
 // Connection settings come from COSMOS_ENDPOINT and COSMOS_KEY (environment variables or the repo-root .env file).
 // C# note: this file uses "top-level statements" - no Main method or class needed (like a Python script).
 
 var dryRun = args.Contains("--dry-run");
 var reset = args.Contains("--reset");
+var resetRuntime = args.Contains("--reset-runtime");
 var dataPath = ArgValue("--data");
 var database = ArgValue("--database") ?? LeakOpsContainers.DefaultDatabase;
 
@@ -92,8 +95,29 @@ await Upsert(LeakOpsContainers.Suppliers, data.Suppliers, s => s.Id);
 await Upsert(LeakOpsContainers.RepairProcedures, data.RepairProcedures, r => r.Material);
 await Upsert(LeakOpsContainers.Scenarios, data.Scenarios, s => s.Id);
 
+if (resetRuntime)
+{
+    foreach (var name in new[] { LeakOpsContainers.Incidents, LeakOpsContainers.WorkOrders, LeakOpsContainers.PurchaseOrders, LeakOpsContainers.StockReservations })
+        await ClearContainer(name);
+}
+
 Console.WriteLine("Seeding finished.");
 return 0;
+
+async Task ClearContainer(string containerName)
+{
+    var container = db.GetContainer(containerName);
+    var partitionKeyProperty = LeakOpsContainers.PartitionKeyPaths[containerName].TrimStart('/');
+
+    var documents = new List<(string Id, string PartitionKey)>();
+    using var iterator = container.GetItemQueryIterator<Newtonsoft.Json.Linq.JObject>("SELECT * FROM c");
+    while (iterator.HasMoreResults)
+        foreach (var document in await iterator.ReadNextAsync())
+            documents.Add((document.Value<string>("id")!, document.Value<string>(partitionKeyProperty)!));
+
+    await Task.WhenAll(documents.Select(d => container.DeleteItemAsync<object>(d.Id, new PartitionKey(d.PartitionKey))));
+    Console.WriteLine($"  {containerName,-22} {documents.Count,5} deleted");
+}
 
 async Task Upsert<T>(string containerName, IReadOnlyList<T> items, Func<T, string> partitionKey)
 {

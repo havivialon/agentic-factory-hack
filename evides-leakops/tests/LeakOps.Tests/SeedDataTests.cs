@@ -1,6 +1,7 @@
 using LeakOps.Contracts;
 using LeakOps.Seeder;
 using Xunit;
+using static LeakOps.Contracts.Logic.Geo;
 
 namespace LeakOps.Tests;
 
@@ -145,24 +146,5 @@ public class SeedDataTests
         Assert.NotEmpty(qualified);
         Assert.NotEqual(available[0].Id, qualified[0].Id);
         Assert.Equal("T-02", qualified[0].Id);
-    }
-
-    private static GeoPoint PointAt(PipeSegment segment, double chainageM)
-    {
-        var t = chainageM / segment.LengthM;
-        return new GeoPoint(
-            segment.Start.Lat + (segment.End.Lat - segment.Start.Lat) * t,
-            segment.Start.Lon + (segment.End.Lon - segment.Start.Lon) * t);
-    }
-
-    // Haversine: great-circle distance between two coordinates in metres.
-    private static double Metres(GeoPoint a, GeoPoint b)
-    {
-        const double earthRadiusM = 6_371_000;
-        double Rad(double degrees) => degrees * Math.PI / 180;
-        var dLat = Rad(b.Lat - a.Lat);
-        var dLon = Rad(b.Lon - a.Lon);
-        var h = Math.Pow(Math.Sin(dLat / 2), 2) + Math.Cos(Rad(a.Lat)) * Math.Cos(Rad(b.Lat)) * Math.Pow(Math.Sin(dLon / 2), 2);
-        return 2 * earthRadiusM * Math.Asin(Math.Sqrt(h));
     }
 }

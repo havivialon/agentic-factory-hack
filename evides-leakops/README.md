@@ -61,6 +61,7 @@ Seed into Cosmos DB (new database `LeakOpsDB`, 18 containers; the 4 run-time con
 dotnet run --project evides-leakops\src\LeakOps.Seeder -- --dry-run     # validate and count only
 dotnet run --project evides-leakops\src\LeakOps.Seeder                  # upsert (safe to repeat)
 dotnet run --project evides-leakops\src\LeakOps.Seeder -- --reset       # drop and recreate LeakOpsDB
+dotnet run --project evides-leakops\src\LeakOps.Seeder -- --reset-runtime  # re-seed and empty incidents, work orders, purchase orders, reservations (clean demo state)
 ```
 Uses `COSMOS_ENDPOINT` and `COSMOS_KEY` from the environment or the repo-root `.env`. It deliberately ignores
 `COSMOS_DATABASE_NAME` (the `.env` points at the tire-factory database) and refuses any database not named `LeakOps*`.
@@ -99,5 +100,43 @@ start without `WATERSTORING_API_KEY`.
 curl -X POST http://localhost:5080/api/incidents -H "X-Api-Key: dev-waterstoring-key" -H "Content-Type: application/json" -d '{ ... }'
 ```
 
+## MCP server (`src/LeakOps.Mcp`)
+An Azure Functions app. Each `[McpToolTrigger]` function is an MCP tool at `/runtime/webhooks/mcp` (streamable HTTP; the legacy
+SSE endpoint is `/runtime/webhooks/mcp/sse`). Tools read the simulated data in Cosmos DB and write reservations, purchase orders
+and work orders. Errors are returned as JSON (`{"error": ...}`) so an agent can read them and correct itself.
+
+| Used by | Tool | What it does |
+|---|---|---|
+| Triage | `list-sensors` | Sensors of a district with segment, position and alarm limits |
+| | `get-sensor-readings` | Readings in a window ending at a time (10-minute interval), with summary |
+| | `get-planned-works` | Planned works around a time; `activeAtTime` flag |
+| | `get-weather` | Hourly weather with frost hours |
+| | `get-usage-history` | What normal looks like for that hour and day type, plus known past deviations |
+| Diagnostic | `get-pipe-segment` | GIS data: material, diameter, age, depth, customers, sensors, valves |
+| | `get-point-on-segment` | Chainage to coordinates, isolation valves, affected customers and postal codes |
+| | `get-nearby-valves` | Valves within a radius of a coordinate |
+| | `get-repair-procedure` | Certifications, parts, equipment and hours for a material, diameter and breach type |
+| Matchmaker | `get-technicians` | Live roster at a time: on shift, busy, missing certifications, travel time to the site |
+| Procurement | `get-inventory` | Stock, reorder levels, prices, warehouses, supplier lead times |
+| | `reserve-stock` | Atomic, idempotent reservation (parts and equipment); reports `insufficient_stock`, `equipment_unavailable` |
+| | `create-purchase-order` | Order at the supplier, express option, approval above 2500 EUR |
+| Scheduling | `get-travel-estimate` | Travel time with optional stop (e.g. depot), depends on time of day |
+| | `create-work-order` | Builds the job package, computes arrival and completion, refuses uncertified technicians |
+
+Run it locally (needs Azurite for the Functions host, and `local.settings.json` copied from `local.settings.sample.json`; the
+Cosmos key is taken from the environment, so it never has to be written to a file):
+```powershell
+npx azurite --silent --location $env:TEMP\leakops-azurite        # terminal 1
+foreach ($l in Get-Content .env) { if ($l -match '^(COSMOS_ENDPOINT|COSMOS_KEY)=(.*)$') { [Environment]::SetEnvironmentVariable($Matches[1], $Matches[2].Trim().Trim('"'), 'Process') } }
+cd evides-leakops\src\LeakOps.Mcp; func start --port 7071           # terminal 2
+dotnet run evides-leakops\scripts\mcp-smoke.cs                      # terminal 3: walks the burst scenario through all tools
+dotnet run --project evides-leakops\src\LeakOps.Seeder -- --reset-runtime   # clean up what the walk wrote
+```
+In Azure the endpoint needs the `mcp_extension` system key (header `x-functions-key`) and the app's managed identity needs a
+Cosmos DB data role; both are set up in the deployment step. Leave `COSMOS_KEY` empty there and the managed identity is used.
+
+Shared rules (time handling, geometry, travel model, roster check, stock view, purchase math) live in
+`src/LeakOps.Contracts/Logic`, so the tools, the agents and the tests use the same code. Local time is a fixed UTC+1.
+
 ## Status
-Steps 0 (scaffold), 1 (data and seeding) and 2 (fake Waterstoring.nl) done. Next: the C# MCP functions.
+Steps 0 to 3 done (scaffold, data and seeding, fake Waterstoring.nl, MCP functions). Next: agent base and the Triage agent.
