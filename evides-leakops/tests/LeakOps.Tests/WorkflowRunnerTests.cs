@@ -52,7 +52,7 @@ public class WorkflowRunnerTests
         return new SchedulingResult(order.IncidentId, order, [], "Go.", false, [], [], at.AddHours(8), incident, []);
     }
 
-    private class FakeGateway : IAgentGateway
+    internal class FakeGateway : IAgentGateway
     {
         public List<(string Step, object Body)> Calls { get; } = [];
         public Dictionary<string, Func<object, object>> Answers { get; } = [];

@@ -32,12 +32,13 @@ public record WaterstoringIncidentRequest(
     string? Advice,
     string? AdviceEn);
 
-/// <summary>Body of PATCH /api/incidents/{id}. Only the fields that are set change.</summary>
+/// <summary>Body of PATCH /api/incidents/{id}. Only the fields that are set change. An expected resolution time that has become unknown is withdrawn with ClearExpectedResolution.</summary>
 public record WaterstoringIncidentUpdate(
     string? Status,
     string? Message,
     string? MessageEn,
-    DateTimeOffset? ExpectedResolutionUtc);
+    DateTimeOffset? ExpectedResolutionUtc,
+    bool? ClearExpectedResolution = null);
 
 public record WaterstoringTimelineEntry(
     DateTimeOffset AtUtc,

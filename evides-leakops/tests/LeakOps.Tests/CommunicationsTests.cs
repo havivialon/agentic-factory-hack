@@ -78,11 +78,70 @@ public class CommunicationsTests
         var report = BurstReport;
         var good = CommunicationsRules.Fallback(report);
 
-        Assert.Contains(CommunicationsRules.Check(good with { AdviceNl = "" }, report), i => i.Contains("adviceNl is empty"));
+        Assert.Contains(CommunicationsRules.Check(good with { AdviceNl = new string('a', 400) }, report), i => i.Contains("adviceNl is too long"));
+        Assert.Empty(CommunicationsRules.Check(good with { AdviceNl = "", AdviceEn = "" }, report));   // the advice is not the model's job: empty is fine
         Assert.Contains(CommunicationsRules.Check(good with { MessageEn = new string('a', 600) }, report), i => i.Contains("messageEn is too long"));
         Assert.Contains(CommunicationsRules.Check(good with { TitleNl = "Storing", MessageNl = "Er is een storing aan de waterleiding." }, report),
             i => i.Contains("Dutch title and message name neither"));
         Assert.Contains(CommunicationsRules.Check(good with { MessageEn = good.MessageNl }, report), i => i.Contains("copy of the Dutch"));
+    }
+
+    [Theory]
+    [InlineData("Het water is veilig om te drinken.")]
+    [InlineData("Drink het water niet zonder het te koken.")]
+    [InlineData("Boil the water before use.")]
+    [InlineData("The water is safe to drink.")]
+    [InlineData("Het leidingwater is besmet met bacteriën.")]
+    [InlineData("Water that is contaminated may cause disease.")]
+    [InlineData("There is a risk of flooding in the area.")]
+    public void Health_and_safety_claims_about_the_water_are_never_published(string sentence)
+    {
+        var report = BurstReport;
+        var good = CommunicationsRules.Fallback(report);
+
+        var issues = CommunicationsRules.Check(good with { MessageNl = good.MessageNl + " " + sentence, MessageEn = good.MessageEn + " " + sentence }, report);
+
+        Assert.Contains(issues, i => i.Contains("health or safety claim"));
+    }
+
+    [Fact]
+    public void Ordinary_words_like_drinkwater_are_not_mistaken_for_health_advice()
+    {
+        var report = BurstReport;
+        var good = CommunicationsRules.Fallback(report);
+
+        var issues = CommunicationsRules.Check(good with { TitleNl = "Storing in de drinkwatervoorziening Spijkenisse", TitleEn = "Disruption of the drinking water supply in Spijkenisse" }, report);
+
+        Assert.Empty(issues);
+    }
+
+    [Fact]
+    public async Task The_advice_residents_get_is_always_the_standard_advice_whatever_the_model_wrote()
+    {
+        var report = BurstReport;
+        var draft = CommunicationsRules.Fallback(report) with { TitleNl = "Geen water in delen van Spijkenisse", AdviceNl = "Gebruik het water gewoon.", AdviceEn = "Anything goes." };
+
+        var decision = await CommunicationsRules.ChooseNoticeAsync(report, _ => Task.FromResult(draft));
+
+        Assert.False(decision.UsedFallback);
+        Assert.Equal(CommunicationsRules.Fallback(report).AdviceNl, decision.Notice.AdviceNl);
+        Assert.Equal(CommunicationsRules.Fallback(report).AdviceEn, decision.Notice.AdviceEn);
+        Assert.Contains(CommunicationsRules.HelpLine, decision.Notice.AdviceNl);
+    }
+
+    [Theory]
+    [InlineData("ALM-2026-1114-0001", true)]
+    [InlineData("ALM-A", true)]
+    [InlineData("A", false)]                        // would collide with ALM-A: both would become INC-A
+    [InlineData("ALM-A/B", false)]                  // sanitising would turn it into the same id as ALM-A-B
+    [InlineData("ALM-A B", false)]
+    [InlineData("alm-lowercase", false)]
+    [InlineData("ALM-", false)]
+    [InlineData("", false)]
+    public void Only_alarm_ids_that_cannot_collide_are_accepted(string alarmId, bool valid)
+    {
+        Assert.Equal(valid, IncidentIds.IsValidAlarmId(alarmId));
+        Assert.False(IncidentIds.IsValidAlarmId(new string('x', 70)));
     }
 
     [Fact]

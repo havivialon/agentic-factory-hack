@@ -19,6 +19,41 @@ public class TriageRulesTests
         Verdict: verdict, Confidence: confidence, Summary: "Summary.", Evidence: evidence,
         SuspectedSegmentId: "SEG-0412", NextStep: "whatever");
 
+    private static PlannedWorkFact Work(string status, bool active) => new("PW-1", status, active);
+
+    [Fact]
+    public void A_false_alarm_is_only_closed_when_a_planned_work_is_documented_as_active()
+    {
+        var verdict = TriageRules.Normalize(Verdict("false_alarm", 0.95, NoLeak, Leak), Alarm);
+
+        Assert.Equal("false_alarm", TriageRules.RequireDocumentedExplanation(verdict, [Work("in_progress", true)]).Verdict);
+        Assert.Equal("false_alarm", TriageRules.RequireDocumentedExplanation(verdict, [Work("scheduled", true)]).Verdict);
+    }
+
+    [Theory]
+    [InlineData(false)]    // nothing planned in the district
+    [InlineData(true)]     // only a work that is not active at the alarm time, or already completed
+    public void Without_a_documented_explanation_a_closing_verdict_goes_to_a_person_however_sure_the_model_is(bool plannedButNotActive)
+    {
+        var verdict = TriageRules.Normalize(Verdict("false_alarm", 0.99, NoLeak, Leak), Alarm);
+        PlannedWorkFact[] works = plannedButNotActive ? [Work("scheduled", false), Work("completed", true)] : [];
+
+        var result = TriageRules.RequireDocumentedExplanation(verdict, works);
+
+        Assert.Equal("uncertain", result.Verdict);
+        Assert.Equal("manual_review", result.NextStep);
+        Assert.True(result.Confidence <= 0.4);
+        Assert.Contains("Not closed", result.Summary);
+    }
+
+    [Fact]
+    public void The_documented_explanation_check_leaves_a_genuine_leak_alone()
+    {
+        var leak = TriageRules.Normalize(Verdict("genuine_leak", 0.97, Leak, MoreLeak), Alarm);
+
+        Assert.Equal(leak, TriageRules.RequireDocumentedExplanation(leak, []));
+    }
+
     [Fact]
     public void A_well_supported_leak_keeps_its_verdict_and_gets_identity_and_next_step_from_the_rules()
     {

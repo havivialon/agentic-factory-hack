@@ -1,5 +1,6 @@
 using System.Text.Json;
 using LeakOps.Contracts;
+using LeakOps.Contracts.Logic;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Azure.Functions.Worker;
@@ -186,6 +187,7 @@ public class AgentFunctions(TriageAgent triage, DiagnosticAgent diagnostic, Comm
     {
         if (alarm is null) return "Body is required.";
         if (string.IsNullOrWhiteSpace(alarm.AlarmId)) return "alarmId is required.";
+        if (!IncidentIds.IsValidAlarmId(alarm.AlarmId)) return "alarmId must look like ALM-2026-1114-0001 (ALM- followed by letters, digits, '.', '_' or '-', at most 59 characters).";
         if (string.IsNullOrWhiteSpace(alarm.SensorId)) return "sensorId is required.";
         if (string.IsNullOrWhiteSpace(alarm.DistrictId)) return "districtId is required.";
         if (alarm.TriggeredAtUtc == default) return "triggeredAtUtc is required (ISO 8601 UTC).";

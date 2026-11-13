@@ -9,13 +9,18 @@ public static class DiagnosticRules
 {
     private static readonly TimeSpan StiffValveAge = TimeSpan.FromDays(2 * 365);
 
+    /// <summary>The rule from the diagnostic instructions: a burst when the inlet flow is this far above what is expected, or when the pressure fell this far.</summary>
+    public const double BurstInletExcessM3h = 40;
+    public const double BurstDropBar = 1.0;
+
     public static DiagnosticReport Build(
         DiagnosisJudgement judgement,
         PipeSegment segment,
         IReadOnlyList<IsolationValveInfo> valves,
         RepairProcedure? procedure,
         TriageVerdict triage,
-        IReadOnlyList<SegmentDrop> pressureDrops)
+        IReadOnlyList<SegmentDrop> pressureDrops,
+        DiagnosticFacts? facts = null)
     {
         var warnings = new List<string>();
         var reviewReasons = new List<string>();
@@ -36,10 +41,43 @@ public static class DiagnosticRules
         if (breachType != judgement.BreachType)
             warnings.Add($"Breach type '{judgement.BreachType}' is not valid; assumed 'burst' (the safer assumption).");
 
-        var chainage = double.IsNaN(judgement.ChainageM) ? segment.LengthM / 2 : Math.Clamp(judgement.ChainageM, 0, segment.LengthM);
-        if (chainage != judgement.ChainageM)
-            warnings.Add($"Position {judgement.ChainageM} m is outside the segment (0 to {segment.LengthM} m); corrected to {chainage} m.");
-        var uncertainty = double.IsNaN(judgement.UncertaintyM) ? segment.LengthM / 2 : Math.Max(0, judgement.UncertaintyM);
+        // The data has a say: when code measured the inlet flow and the pressure drop, the burst rule applies. If the model and the rule
+        // disagree the safer reading (burst) stands, so a real burst is never downgraded by a wrong answer.
+        var ownDrop = pressureDrops.FirstOrDefault(d => d.SegmentId == segment.Id)?.MaxDropBar;
+        if (facts is not null && (facts.InletExcessM3h is not null || ownDrop is not null))
+        {
+            var byRule = (facts.InletExcessM3h ?? 0) >= BurstInletExcessM3h || (ownDrop ?? 0) >= BurstDropBar ? "burst" : "leak";
+            if (byRule != breachType)
+            {
+                var chosen = byRule == "burst" || breachType == "burst" ? "burst" : "leak";
+                warnings.Add($"The model said '{breachType}', but the data says '{byRule}' (inlet flow {facts.InletExcessM3h?.ToString("F0") ?? "unknown"} m3/h above expected, pressure fell {ownDrop?.ToString("F2") ?? "unknown"} bar); '{chosen}' was used.");
+                breachType = chosen;
+            }
+        }
+
+        // The position comes from the pressure-gradient locator that code ran, not from the model's number.
+        double chainage, uncertainty;
+        if (facts?.EstimatedChainageM is { } estimated && facts.EstimateUncertaintyM is { } estimatedUncertainty)
+        {
+            chainage = estimated;
+            uncertainty = estimatedUncertainty;
+            if (double.IsNaN(judgement.ChainageM) || Math.Abs(judgement.ChainageM - estimated) > 1 || double.IsNaN(judgement.UncertaintyM) || Math.Abs(judgement.UncertaintyM - estimatedUncertainty) > 1)
+                warnings.Add($"The model gave position {judgement.ChainageM:F0} m (±{judgement.UncertaintyM:F0} m); the locator's {estimated:F0} m (±{estimatedUncertainty:F0} m) was used.");
+        }
+        else if (facts is not null)
+        {
+            chainage = segment.LengthM / 2;
+            uncertainty = segment.LengthM / 2;
+            warnings.Add($"No pressure sensor on {segment.Id} fell enough to locate the breach; the position along the segment is unknown.");
+        }
+        else
+        {
+            chainage = double.IsNaN(judgement.ChainageM) ? segment.LengthM / 2 : Math.Clamp(judgement.ChainageM, 0, segment.LengthM);
+            if (chainage != judgement.ChainageM)
+                warnings.Add($"Position {judgement.ChainageM} m is outside the segment (0 to {segment.LengthM} m); corrected to {chainage} m.");
+            uncertainty = double.IsNaN(judgement.UncertaintyM) ? segment.LengthM / 2 : Math.Max(0, judgement.UncertaintyM);
+        }
+        chainage = Math.Clamp(chainage, 0, segment.LengthM);
         if (uncertainty > 0.4 * segment.LengthM)
             reviewReasons.Add($"The position along {segment.Id} is only known to within ±{Math.Round(uncertainty)} m of a {segment.LengthM} m segment.");
 

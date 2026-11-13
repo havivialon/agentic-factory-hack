@@ -42,6 +42,21 @@ dotnet test --project evides-leakops\tests\LeakOps.Tests
 ```
 (`global.json` opts in to the Microsoft.Testing.Platform runner that xunit v3 needs on the .NET 10 SDK.)
 
+Three layers of checks, from fast to thorough:
+
+| Layer | What it covers | Needs |
+|---|---|---|
+| `tests/LeakOps.Tests` (about 170 tests, 3 s) | The seed data; every rules class (triage, diagnosis, communications, matchmaker, procurement, scheduling) including the cases where the model is wrong; the workflow runner (false alarm, needs review, failures, cancel); the Waterstoring API; the workflow host over HTTP with a fake in place of the agents (SSE format, validation, no ground truth leak) | nothing |
+| `scripts/mcp-smoke.cs` | The MCP tools walked through the burst scenario the way the agents use them, plus tool guardrails | MCP host and Cosmos |
+| `scripts/e2e.cs` (46 checks, about 5 min) | The real model end to end through the workflow host: false alarm closes; the burst finishes and its results are compared with the simulation's ground truth (segment, position within the stated uncertainty, severity, T-02 chosen and T-01/T-03/T-04 ruled out for the right reasons, the 8 t excavator, approval above 2,500 EUR, schedule maths, what residents read); the same alarm again changes nothing; guardrails (unknown sensor, injection in the alarm text, refusal paths, API key, no ground truth in the operator page) | everything running (AppHost) and `--reset-runtime` first |
+
+```powershell
+dotnet run --project evides-leakops\src\LeakOps.Seeder -- --reset-runtime
+dotnet run --project evides-leakops\src\LeakOps.AppHost        # in another terminal
+dotnet run evides-leakops\scripts\e2e.cs
+```
+The e2e script calls the model, so it costs tokens. Run `--reset-runtime` again afterwards.
+
 ## Simulated data and seeding
 Static data lives in `data/*.json`. Sensor readings (10-minute interval), weather and usage profiles are **generated
 deterministically** from `data/simulation.json` when the seeder runs. All times are UTC (the Netherlands is UTC+1 in November).
@@ -254,6 +269,29 @@ curl -X POST http://localhost:7072/api/agents/triage -H "Content-Type: applicati
 Credentials: in Azure the app's managed identity is used; locally the Azure CLI (pinned to `AZURE_TENANT_ID`). Settings:
 `AZURE_AI_PROJECT_ENDPOINT`, `MODEL_DEPLOYMENT_NAME` (default `gpt-5.4`), `MCP_SERVER_URL`, `MCP_AUTH_KEY`, `AZURE_TENANT_ID`.
 
+## Guardrails in code
+The model only judges and writes; code owns the facts and re-checks everything the model says before anything is published, booked
+or dispatched. An independent review of the code found the gaps below, which are now closed (each has unit tests, and the key ones
+are in `scripts/e2e.cs`):
+
+| Risk | Guard |
+|---|---|
+| A model wrongly closes a real leak as a false alarm | Triage can only close an alarm when code finds a planned work that is active in the district at that time in the planned-works register; otherwise the verdict becomes `uncertain` and a person looks |
+| A model invents where the break is, or calls a burst a leak | The position comes from the pressure-gradient locator that code runs; the burst rule (inlet flow 40 m3/h above expected, or a 1.0 bar drop) is applied to measured values, and when model and data disagree the safer reading (burst) stands |
+| Unsafe public text | The advice residents get is always written by code. The model's title and message may not contain internal ids, costs, times, blame, customer names, or any health or safety claim (drinkable, safe, boil, contaminated, flooding) |
+| A technician briefing that contradicts the plan | The briefing must name the street and every valve, in the plan's order, may only use times from the schedule, and may not tell the technician to skip or avoid something; otherwise the rules' own briefing is sent |
+| Two incidents get the same incident id | Alarm ids must look like `ALM-...` with letters, digits, `.`, `_`, `-`; the incident id is derived from it, so no other shape can collide |
+| One technician at two repairs | A technician with a work order for another incident is busy for the whole job window (arrival to completion), and `create-work-order` refuses an overlap |
+| Parts tied up for a repair that cannot go ahead | When Procurement finds a blocker (no excavator), nothing is reserved or ordered until a person decides |
+| Two runs of one alarm at the same time | The workflow host answers 409 while a run of that alarm is in progress |
+| The public page contradicts itself | A repeated "reported" notice never takes an incident back from `repair_planned`; repeats add nothing to the timeline; an expected time that can no longer be promised is withdrawn; times use Amsterdam time with daylight saving |
+
+### Known limits of this demo
+- **Simulation clock:** the data exists around the alarm times of the two scenarios (November 2026), so the agents treat the alarm time as "now" (departure, supplier lead times, availability). A live system would use the real clock.
+- **Reservations are not one transaction:** `reserve-stock` writes a reservation and then decrements the stock in two Cosmos containers. A crash between the two would leave a reservation without a decrement; repair it with `--reset-runtime`. A production version would add a pending state or a transactional outbox.
+- **No sign-in on the operator console, the workflow API or the Waterstoring ingest key in Development:** fine on a laptop, not for Azure. Securing them (managed identity or keys, easy auth) is part of the deployment step.
+- **Waterstoring keeps its incidents in memory:** a restart empties it.
+
 ## Workflow host and operator console (`src/LeakOps.Workflow`)
 The workflow host runs the six agents in order for one alarm and streams the progress to a browser page. It only orchestrates: it
 calls the HTTP functions of the Agents app (`AGENTS_BASE_URL`, `AGENTS_FUNCTION_KEY` when deployed) and never touches data.
@@ -293,4 +331,4 @@ clear the fake site with `POST /api/admin/reset` (or restart it). Measured: the 
 the false alarm about 20 s.
 
 ## Status
-Steps 0 to 10 done (scaffold, data and seeding, fake Waterstoring.nl, MCP functions, agent runtime, the six agents, the workflow host with its operator console, and the Aspire AppHost). Next: end-to-end tests and verification (step 11).
+Steps 0 to 11 done (scaffold, data and seeding, fake Waterstoring.nl, MCP functions, agent runtime, the six agents, the workflow host with its operator console, the Aspire AppHost, and end-to-end verification with the guardrails above). Next: Azure deployment (step 12).

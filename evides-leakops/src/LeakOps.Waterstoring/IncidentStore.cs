@@ -9,21 +9,36 @@ public class IncidentStore(TimeProvider time)
     private readonly object _gate = new();
     private readonly Dictionary<string, WaterstoringIncident> _incidents = new(StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>Creates the incident, or replaces it when the IncidentId already exists (so retries are safe).</summary>
+    /// <summary>
+    /// Creates the incident, or replaces it when the IncidentId already exists (so retries are safe). A repeated "reported" notice never
+    /// takes an incident that has moved on (repair planned, in progress, resolved) back to "reported", and a repeat that changes nothing
+    /// adds nothing to the public timeline.
+    /// </summary>
     public (WaterstoringIncident Incident, bool Created) Upsert(WaterstoringIncidentRequest request)
     {
         lock (_gate)
         {
             var now = time.GetUtcNow();
-            var entry = new WaterstoringTimelineEntry(now, request.Status, request.Message, request.MessageEn, request.ExpectedResolutionUtc);
 
             if (_incidents.TryGetValue(request.IncidentId, out var existing))
             {
-                var replaced = FromRequest(request, existing.CreatedUtc, now, [.. existing.Timeline, entry]);
+                if (request.Status == WaterstoringStatus.Reported && existing.Status != WaterstoringStatus.Reported)
+                    request = request with
+                    {
+                        Status = existing.Status, Message = existing.Message, MessageEn = existing.MessageEn, ExpectedResolutionUtc = existing.ExpectedResolutionUtc,
+                    };
+
+                var unchanged = request.Status == existing.Status && request.Message == existing.Message && request.MessageEn == existing.MessageEn
+                                && request.ExpectedResolutionUtc == existing.ExpectedResolutionUtc;
+                var timeline = unchanged
+                    ? existing.Timeline
+                    : [.. existing.Timeline, new WaterstoringTimelineEntry(now, request.Status, request.Message, request.MessageEn, request.ExpectedResolutionUtc)];
+                var replaced = FromRequest(request, existing.CreatedUtc, unchanged ? existing.UpdatedUtc : now, timeline);
                 _incidents[request.IncidentId] = replaced;
                 return (replaced, false);
             }
 
+            var entry = new WaterstoringTimelineEntry(now, request.Status, request.Message, request.MessageEn, request.ExpectedResolutionUtc);
             var created = FromRequest(request, now, now, [entry]);
             _incidents[request.IncidentId] = created;
             return (created, true);
@@ -40,7 +55,7 @@ public class IncidentStore(TimeProvider time)
             var status = update.Status ?? current.Status;
             var message = update.Message ?? current.Message;
             var messageEn = update.MessageEn ?? current.MessageEn;
-            var eta = update.ExpectedResolutionUtc ?? current.ExpectedResolutionUtc;
+            var eta = update.ClearExpectedResolution == true ? null : update.ExpectedResolutionUtc ?? current.ExpectedResolutionUtc;
 
             // A repeated update (an agent retry) changes nothing and must not add a line to the public timeline.
             if (status == current.Status && message == current.Message && messageEn == current.MessageEn && eta == current.ExpectedResolutionUtc)

@@ -132,6 +132,11 @@ public class ProcurementTests
 
         Assert.Contains(plan.ReviewReasons, r => r.Contains("excavator of at least 8 t") && r.Contains("EQP-EXC-14T is back on Mon 16 Nov"));
         Assert.DoesNotContain(plan.Reservations, r => r.Sku.StartsWith("EQP-EXC"));
+
+        // Until a person decides nothing at all is booked: no reservations, no orders, nothing tied up for a repair that may change.
+        Assert.Empty(plan.Reservations);
+        Assert.Empty(plan.Orders);
+        Assert.All(plan.Lines, l => Assert.Equal(("not_booked", 0), (l.Status, l.Reserved)));
     }
 
     [Fact]

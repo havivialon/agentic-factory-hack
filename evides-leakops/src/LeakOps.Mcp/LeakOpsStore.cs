@@ -164,6 +164,10 @@ public class LeakOpsStore
     public Task UpsertWorkOrderAsync(WorkOrder order) =>
         Container(LeakOpsContainers.WorkOrders).UpsertItemAsync(order, new PartitionKey(order.IncidentId));
 
+    /// <summary>All work orders (across incidents), to see who is already committed.</summary>
+    public Task<List<WorkOrder>> ListWorkOrdersAsync() =>
+        QueryAsync<WorkOrder>(LeakOpsContainers.WorkOrders, new QueryDefinition("SELECT * FROM c"));
+
     // ---- Helpers --------------------------------------------------------------------------------------------------
 
     private async Task<List<T>> QueryAsync<T>(string container, QueryDefinition query, string? partitionKey = null)

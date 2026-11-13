@@ -20,6 +20,8 @@
     <ProjectReference Include="..\..\src\LeakOps.Contracts\LeakOps.Contracts.csproj" />
     <ProjectReference Include="..\..\src\LeakOps.Seeder\LeakOps.Seeder.csproj" />
     <ProjectReference Include="..\..\src\LeakOps.Waterstoring\LeakOps.Waterstoring.csproj" />
+    <!-- Both web projects have a top-level Program, so the workflow host is reached through an alias. -->
+    <ProjectReference Include="..\..\src\LeakOps.Workflow\LeakOps.Workflow.csproj" Aliases="WorkflowHost" />
   </ItemGroup>
 
 </Project>

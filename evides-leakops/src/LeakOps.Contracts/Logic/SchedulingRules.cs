@@ -156,6 +156,7 @@ public static class SchedulingRules
     // ---- briefing ------------------------------------------------------------------------------------------------
 
     private static readonly Regex Clock = new(@"(?<![\d:])([01]?\d|2[0-3]):[0-5]\d(?![\d:])", RegexOptions.Compiled);
+    private static readonly Regex Negation = new(@"\b(do not|don't|dont|never|skip|avoid|instead of|ignore|leave (it |them )?open|keep (it |them )?open|do nothing)\b", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     /// <summary>Checks the model's briefing against the schedule: it must name the street and the valves and may only mention times that are in the schedule.</summary>
     public static List<string> CheckBriefing(string? text, DiagnosticReport report, SchedulePlan plan)
@@ -166,6 +167,14 @@ public static class SchedulingRules
         if (!text.Contains(StreetName(report.Street), StringComparison.OrdinalIgnoreCase)) issues.Add($"The briefing does not mention the street ({StreetName(report.Street)}).");
         foreach (var step in report.IsolationPlan.Where(s => !text.Contains(s.ValveId, StringComparison.OrdinalIgnoreCase)))
             issues.Add($"The briefing does not mention valve {step.ValveId}.");
+
+        // The valves must come in the order of the isolation plan, and the text may not tell the technician to leave something out:
+        // what to close is decided by the plan, not by the wording of a model.
+        var positions = report.IsolationPlan.OrderBy(s => s.Order).Select(s => text.IndexOf(s.ValveId, StringComparison.OrdinalIgnoreCase)).Where(p => p >= 0).ToList();
+        if (positions.Zip(positions.Skip(1), (a, b) => a > b).Any(outOfOrder => outOfOrder))
+            issues.Add("The briefing names the valves in a different order than the isolation plan.");
+        if (Negation.IsMatch(text))
+            issues.Add("The briefing tells the technician not to do something; instructions must follow the plan.");
 
         var allowed = plan.Route.SelectMany(r => new[] { Hm(r.ArriveUtc), Hm(r.DepartUtc) })
             .Append(Hm(plan.CompletionUtc)).Append(Hm(plan.ArriveUtc))

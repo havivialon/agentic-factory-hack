@@ -17,14 +17,18 @@ public class WorkforceTools(LeakOpsStore store, ILogger<WorkforceTools> logger)
         [McpToolProperty("requiredCertifications", "Comma separated certification codes from the repair procedure, for example CI-REPAIR-L3,EXCAVATOR-OP,TRAFFIC-MGMT", isRequired: false)] string? requiredCertifications,
         [McpToolProperty("siteLat", "Latitude of the repair site", isRequired: false)] double? siteLat,
         [McpToolProperty("siteLon", "Longitude of the repair site", isRequired: false)] double? siteLon,
-        [McpToolProperty("availableOnly", "When true, leave out technicians who are not available at that moment. Default false.", isRequired: false)] bool? availableOnly)
+        [McpToolProperty("availableOnly", "When true, leave out technicians who are not available at that moment. Default false.", isRequired: false)] bool? availableOnly,
+        [McpToolProperty("excludeIncidentId", "The incident you are planning, for example INC-2026-1114-0001. Technicians already committed to OTHER incidents count as busy; this incident's own work order does not.", isRequired: false)] string? excludeIncidentId,
+        [McpToolProperty("jobHours", "How many hours the technician will be committed from atUtc, normally the repair hours of the procedure. A technician who is busy at any time in that window counts as busy. Default 0: only the moment itself is checked.", isRequired: false)] double? jobHours)
     {
         if (!ToolJson.TryTime(atUtc, "atUtc", out var at, out var error)) return error;
         var required = ToolJson.SplitList(requiredCertifications);
         GeoPoint? site = siteLat is not null && siteLon is not null ? new GeoPoint(siteLat.Value, siteLon.Value) : null;
+        var commitment = TimeSpan.FromHours(Math.Clamp(jobHours ?? 0, 0, 24));
 
+        var workOrders = await store.ListWorkOrdersAsync();
         var statuses = (await store.ListTechniciansAsync())
-            .Select(t => WorkforceAvailability.Evaluate(t, at, required, site))
+            .Select(t => WorkforceAvailability.Evaluate(WorkforceAvailability.WithAssignments(t, workOrders, excludeIncidentId), at, required, site, commitment))
             .Where(s => availableOnly != true || s.Available)
             .OrderByDescending(s => s.Available && s.HasAllRequiredCertifications)
             .ThenBy(s => s.EstimatedTravelMinutes ?? int.MaxValue)

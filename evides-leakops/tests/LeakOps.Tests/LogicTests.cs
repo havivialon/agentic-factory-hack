@@ -73,6 +73,17 @@ public class LogicTests
     }
 
     [Fact]
+    public void Local_time_is_amsterdam_time_including_daylight_saving()
+    {
+        var winter = LeakOpsTime.ToLocal(new DateTimeOffset(2026, 11, 14, 3, 10, 0, TimeSpan.Zero));
+        var summer = LeakOpsTime.ToLocal(new DateTimeOffset(2026, 7, 1, 12, 0, 0, TimeSpan.Zero));
+
+        Assert.Equal((4, 1), (winter.Hour, winter.Offset.Hours));    // CET, UTC+1
+        Assert.Equal((14, 2), (summer.Hour, summer.Offset.Hours));   // CEST, UTC+2
+        Assert.Equal("weekend", LeakOpsTime.DayType(new DateTimeOffset(2026, 7, 4, 22, 30, 0, TimeSpan.Zero)));   // 00:30 on Sunday 5 July in Amsterdam
+    }
+
+    [Fact]
     public void Stock_availability_accounts_for_reservations_and_equipment_that_is_not_back_yet()
     {
         var warehouses = Data.Warehouses.ToDictionary(w => w.Id);

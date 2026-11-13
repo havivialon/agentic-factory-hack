@@ -80,6 +80,55 @@ public class DiagnosticLogicTests
     private static readonly SegmentDrop[] Drops = [new("SEG-0412", 2.01), new("SEG-0415", 0.32)];
 
     [Fact]
+    public void The_position_comes_from_the_locator_that_code_ran_not_from_the_model()
+    {
+        // The model claims a precise position at the far end of the segment; the locator measured 174 m (±54 m).
+        var judgement = new DiagnosisJudgement("SEG-0412", 400, 2, "burst", ["V-0412-A", "V-0412-B"], "Burst.", [Evidence]);
+
+        var report = DiagnosticRules.Build(judgement, Segment, ValvesOf(Segment, 174), Procedure, Triage(), Drops, new DiagnosticFacts(174, 54, 80));
+
+        Assert.Equal((174, 54), (report.ChainageM, report.UncertaintyM));
+        Assert.Equal(Geo.PointAt(Segment, 174), report.Location);
+        Assert.Contains(report.Warnings, w => w.Contains("locator's 174 m"));
+    }
+
+    [Fact]
+    public void A_model_position_that_matches_the_locator_is_accepted_without_a_warning()
+    {
+        var judgement = new DiagnosisJudgement("SEG-0412", 174.2, 54, "burst", ["V-0412-A", "V-0412-B"], "Burst.", [Evidence]);
+
+        var report = DiagnosticRules.Build(judgement, Segment, ValvesOf(Segment, 174), Procedure, Triage(), Drops, new DiagnosticFacts(174, 54, 80));
+
+        Assert.DoesNotContain(report.Warnings, w => w.Contains("locator"));
+    }
+
+    [Fact]
+    public void When_no_sensor_fell_enough_to_locate_the_breach_the_position_is_unknown_and_a_person_checks()
+    {
+        var judgement = new DiagnosisJudgement("SEG-0412", 100, 5, "burst", ["V-0412-A", "V-0412-B"], "Burst.", [Evidence]);
+
+        var report = DiagnosticRules.Build(judgement, Segment, ValvesOf(Segment, 100), Procedure, Triage(), Drops, new DiagnosticFacts(null, null, 80));
+
+        Assert.Equal(Segment.LengthM / 2.0, report.UncertaintyM, 0);
+        Assert.True(report.NeedsReview);
+        Assert.Contains(report.Warnings, w => w.Contains("position along the segment is unknown"));
+    }
+
+    [Theory]
+    [InlineData("leak", 80.0, 2.01, "burst")]     // flow far above normal and a 2 bar drop: a burst, whatever the model says
+    [InlineData("leak", 5.0, 1.2, "burst")]       // the pressure rule alone is enough
+    [InlineData("burst", 5.0, 0.4, "burst")]      // the model is more cautious than the data: the safer reading stands
+    [InlineData("leak", 5.0, 0.4, "leak")]        // both agree it is small
+    public void The_burst_rule_is_applied_to_the_measured_values_and_the_safer_reading_wins(string model, double excessM3h, double dropBar, string expected)
+    {
+        var judgement = new DiagnosisJudgement("SEG-0412", 174, 54, model, ["V-0412-A", "V-0412-B"], "x", [Evidence]);
+
+        var report = DiagnosticRules.Build(judgement, Segment, ValvesOf(Segment, 174), Procedure, Triage(), [new("SEG-0412", dropBar)], new DiagnosticFacts(174, 54, excessM3h));
+
+        Assert.Equal(expected, report.BreachType);
+    }
+
+    [Fact]
     public void A_good_judgement_becomes_a_report_with_facts_from_gis_and_rules()
     {
         var judgement = new DiagnosisJudgement("SEG-0412", 174, 54, "burst", ["V-0412-A", "V-0412-B"], "Burst on Dorpsweg.", [Evidence]);

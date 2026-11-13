@@ -22,6 +22,15 @@ public class ScenarioCatalog
     }
 }
 
+/// <summary>One run per alarm at a time: two overlapping runs of the same alarm would book the same incident twice and publish out of order.</summary>
+public class RunGuard
+{
+    private readonly ConcurrentDictionary<string, byte> _active = new(StringComparer.OrdinalIgnoreCase);
+
+    public bool TryEnter(string alarmId) => _active.TryAdd(alarmId, 0);
+    public void Exit(string alarmId) => _active.TryRemove(alarmId, out _);
+}
+
 /// <summary>The last runs, in memory, newest first. A restart empties it.</summary>
 public class RunLog
 {

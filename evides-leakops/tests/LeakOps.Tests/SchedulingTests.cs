@@ -186,6 +186,9 @@ public class SchedulingTests
     [InlineData("Go to Dorpsweg and close V-0412-A.", "does not mention valve V-0412-B")]
     [InlineData("Go to Dorpsweg, close V-0412-A and V-0412-B. Leave 2026-11-14T03:20:00Z.", "raw timestamp")]
     [InlineData("", "empty")]
+    [InlineData("Go to Dorpsweg. Close V-0412-B first, then V-0412-A.", "different order")]                          // not the order of the isolation plan
+    [InlineData("Go to Dorpsweg. Close V-0412-A. Do not close V-0412-B.", "not to do something")]                    // names the valve but tells the opposite
+    [InlineData("Go to Dorpsweg, close V-0412-A and V-0412-B, but skip the second one if it is stiff.", "not to do something")]
     public void A_briefing_that_contradicts_the_schedule_is_rejected(string text, string expectedIssue)
     {
         var (report, _, _, plan, _) = Scenario();

@@ -66,4 +66,27 @@ public static class TriageRules
             SuspectedSegmentId: result == GenuineLeak ? segment : null,
             NextStep: result switch { GenuineLeak => "diagnose", FalseAlarm => "close_alarm", _ => "manual_review" });
     }
+
+    /// <summary>
+    /// Closing a real leak is the most expensive mistake, so the model alone can never close an alarm: a false alarm needs a documented
+    /// explanation that code fetched from the planned-works register. Without a planned work that is active in the district at the
+    /// alarm time, the verdict becomes "uncertain" and a person looks at it.
+    /// </summary>
+    public static TriageVerdict RequireDocumentedExplanation(TriageVerdict verdict, IReadOnlyList<PlannedWorkFact> plannedWorks)
+    {
+        if (verdict.Verdict != FalseAlarm) return verdict;
+        if (plannedWorks.Any(w => w.ActiveAtTime && !w.Status.Equals("completed", StringComparison.OrdinalIgnoreCase))) return verdict;
+
+        return verdict with
+        {
+            Verdict = Uncertain,
+            Confidence = Math.Min(verdict.Confidence, 0.4),
+            SuspectedSegmentId = null,
+            NextStep = "manual_review",
+            Summary = $"Not closed: a false alarm needs a documented explanation, and no planned work is active in {verdict.DistrictId} at the alarm time. {verdict.Summary}".Trim(),
+        };
+    }
 }
+
+/// <summary>A planned work as returned by the get-planned-works tool.</summary>
+public record PlannedWorkFact(string Id, string Status, bool ActiveAtTime);

@@ -112,6 +112,12 @@ public class SchedulingTools(LeakOpsStore store, ILogger<SchedulingTools> logger
         var arrival = now.AddMinutes(travelMinutes.Value);
         var completion = arrival.AddMinutes(isolation + wait).AddHours(repair);
 
+        // One technician cannot be at two repairs: refuse when another incident's work order overlaps in time.
+        var clash = WorkforceAvailability.FindConflict(await store.ListWorkOrdersAsync(), technician.Id, incidentId, now, completion);
+        if (clash is not null)
+            return ToolJson.Error($"{technician.Name} already has work order {clash.Id} ({clash.Street}) from {clash.ScheduledStartUtc:u} to {clash.ExpectedCompletionUtc:u}. Choose another technician.",
+                new { technicianId, conflictingWorkOrderId = clash.Id });
+
         var workOrder = new WorkOrder(
             Id: $"WO-{incidentId}",
             IncidentId: incidentId,

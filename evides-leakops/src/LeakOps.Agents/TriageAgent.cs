@@ -76,11 +76,36 @@ public class TriageAgent(LeakOpsAgentRuntime runtime, ILogger<TriageAgent> logge
             // The model proposes, the rules decide: identity from the alarm, values in range, next step follows the verdict.
             var checkedVerdict = TriageRules.Normalize(run.Result, alarm);
             var overruled = checkedVerdict.Verdict != run.Result.Verdict;
-            if (!overruled || attempt == maxAttempts) return run with { Result = checkedVerdict };
+            if (!overruled || attempt == maxAttempts) return await ConfirmClosingAsync(run with { Result = checkedVerdict }, alarm, cancellationToken);
 
             logger.LogWarning("Triage verdict '{Verdict}' for {AlarmId} was overruled (attempt {Attempt}): {Reason}. Evidence: {Evidence}",
                 run.Result.Verdict, alarm.AlarmId, attempt, checkedVerdict.Summary[..Math.Min(120, checkedVerdict.Summary.Length)],
                 string.Join(" | ", run.Result.Evidence.Select(e => $"[{e.Supports}] {e.Finding[..Math.Min(60, e.Finding.Length)]}")));
         }
+    }
+
+    /// <summary>The model may say "false alarm", but the alarm is only closed when the planned-works register, read by code, documents an active work.</summary>
+    private async Task<AgentResult<TriageVerdict>> ConfirmClosingAsync(AgentResult<TriageVerdict> run, AnomalyAlarm alarm, CancellationToken cancellationToken)
+    {
+        if (run.Result.Verdict != TriageRules.FalseAlarm) return run;
+
+        var arguments = new Dictionary<string, object?>
+        {
+            ["districtId"] = alarm.DistrictId,
+            ["atUtc"] = LeakOpsTime.Utc(alarm.TriggeredAtUtc).ToString("yyyy-MM-ddTHH:mm:ssZ"),
+            ["windowHours"] = 1,
+        };
+        var works = (await runtime.CallToolAsync("get-planned-works", arguments, cancellationToken)).GetProperty("works")
+            .Deserialize<List<PlannedWorkFact>>(new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+
+        var confirmed = TriageRules.RequireDocumentedExplanation(run.Result, works);
+        if (confirmed.Verdict != run.Result.Verdict)
+            logger.LogWarning("Triage wanted to close {AlarmId} as a false alarm, but no planned work is active in {DistrictId}: sent to a person.", alarm.AlarmId, alarm.DistrictId);
+
+        return run with
+        {
+            Result = confirmed,
+            Trace = run.Trace with { ToolCalls = [.. run.Trace.ToolCalls, new ToolCallTrace("(rules) get-planned-works", System.Text.Json.JsonSerializer.Serialize(arguments))] },
+        };
     }
 }

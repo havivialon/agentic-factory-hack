@@ -135,6 +135,19 @@ public static class ProcurementRules
                     $"{incidentId}: {remaining} left after this repair, below the reorder level of {item.ReorderLevel}."));
         }
 
+        // A blocker (for example no excavator at all) means a person decides first. Until then nothing is reserved or ordered, so stock is
+        // not tied up for a repair that may not go ahead the way it was planned.
+        if (review.Count > 0)
+        {
+            warnings.Add("Nothing was reserved or ordered: a person has to decide first.");
+            var unbooked = lines.Select(l =>
+            {
+                var have = Math.Min(haveBySku.GetValueOrDefault(l.Sku), l.Needed);
+                return l with { Reserved = have, Short = l.Needed - have, Status = have == 0 ? "not_booked" : have == l.Needed ? "already_reserved" : "partly_reserved" };
+            }).ToList();
+            return new ProcurementPlan(unbooked, [], [], contingencies, warnings, review);
+        }
+
         return new ProcurementPlan(lines, reservations, orders, contingencies, warnings, review);
     }
 

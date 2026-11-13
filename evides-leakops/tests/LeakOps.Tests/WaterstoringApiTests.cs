@@ -83,6 +83,49 @@ public class WaterstoringApiTests
     }
 
     [Fact]
+    public async Task A_repeated_reported_notice_does_not_take_a_planned_repair_back_to_reported()
+    {
+        using var factory = new WebApplicationFactory<Program>();
+        var client = NewClient(factory);
+        var eta = new DateTimeOffset(2026, 11, 14, 17, 15, 0, TimeSpan.Zero);
+        await client.PostAsJsonAsync("/api/incidents", Sample());
+        await client.PatchAsJsonAsync("/api/incidents/INC-1", new WaterstoringIncidentUpdate(WaterstoringStatus.RepairPlanned, "Monteur ingepland.", "Technician scheduled.", eta));
+
+        var again = await client.PostAsJsonAsync("/api/incidents", Sample());   // Communications runs again, with status "reported"
+
+        var incident = (await again.Content.ReadFromJsonAsync<WaterstoringIncident>())!;
+        Assert.Equal(WaterstoringStatus.RepairPlanned, incident.Status);
+        Assert.Equal(eta, incident.ExpectedResolutionUtc);
+        Assert.Equal("Monteur ingepland.", incident.Message);
+        Assert.Equal(2, incident.Timeline.Count);   // the notice, and the one real change: no flapping back and forth
+    }
+
+    [Fact]
+    public async Task Posting_an_identical_incident_again_adds_nothing_to_the_timeline()
+    {
+        using var factory = new WebApplicationFactory<Program>();
+        var client = NewClient(factory);
+
+        await client.PostAsJsonAsync("/api/incidents", Sample());
+        var again = await client.PostAsJsonAsync("/api/incidents", Sample());
+
+        Assert.Single((await again.Content.ReadFromJsonAsync<WaterstoringIncident>())!.Timeline);
+    }
+
+    [Fact]
+    public async Task An_expected_resolution_time_that_can_no_longer_be_promised_can_be_withdrawn()
+    {
+        using var factory = new WebApplicationFactory<Program>();
+        var client = NewClient(factory);
+        await client.PostAsJsonAsync("/api/incidents", Sample());
+        await client.PatchAsJsonAsync("/api/incidents/INC-1", new WaterstoringIncidentUpdate(WaterstoringStatus.RepairPlanned, "a", "a", new DateTimeOffset(2026, 11, 14, 17, 15, 0, TimeSpan.Zero)));
+
+        var cleared = await client.PatchAsJsonAsync("/api/incidents/INC-1", new WaterstoringIncidentUpdate(WaterstoringStatus.RepairPlanned, "b", "b", null, ClearExpectedResolution: true));
+
+        Assert.Null((await cleared.Content.ReadFromJsonAsync<WaterstoringIncident>())!.ExpectedResolutionUtc);
+    }
+
+    [Fact]
     public async Task Repeating_the_same_patch_does_not_add_to_the_timeline()
     {
         using var factory = new WebApplicationFactory<Program>();

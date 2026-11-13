@@ -52,6 +52,9 @@ public record DiagnosisJudgement(
 /// <summary>The largest pressure drop on any sensor of a segment, from the rank-segments-by-pressure-drop tool.</summary>
 public record SegmentDrop(string SegmentId, double MaxDropBar);
 
+/// <summary>What code measured with tools, to check the model's diagnosis against: the locator's position and the inlet flow compared with normal.</summary>
+public record DiagnosticFacts(double? EstimatedChainageM, double? EstimateUncertaintyM, double? InletExcessM3h);
+
 /// <summary>A valve on the segment, as returned by the get-point-on-segment tool.</summary>
 public record IsolationValveInfo(
     string Id,

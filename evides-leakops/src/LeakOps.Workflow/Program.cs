@@ -10,6 +10,7 @@ builder.Services.AddSingleton(WorkflowSettings.From(builder.Configuration));
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<ScenarioCatalog>();
 builder.Services.AddSingleton<RunLog>();
+builder.Services.AddSingleton<RunGuard>();
 // The agents take a while (a model call each), so the HTTP timeout is generous.
 builder.Services.AddHttpClient<IAgentGateway, AgentGateway>(client => client.Timeout = TimeSpan.FromMinutes(5));
 builder.Services.AddTransient<WorkflowRunner>();
@@ -29,45 +30,54 @@ app.MapGet("/api/runs/{runId}", (string runId, RunLog log) => log.Find(runId) is
 // POST /api/runs  { "scenarioId": "..." } or { "alarm": { ... } }
 //   default       -> a text/event-stream with one event per step (run_started, step_started, step_completed, step_failed, run_completed)
 //   ?wait=true    -> waits for the run and returns the summary as JSON (handy for scripts)
-app.MapPost("/api/runs", async (HttpContext context, RunRequest request, ScenarioCatalog catalog, WorkflowRunner runner, RunLog log,
+app.MapPost("/api/runs", async (HttpContext context, RunRequest request, ScenarioCatalog catalog, WorkflowRunner runner, RunLog log, RunGuard guard,
     IHostApplicationLifetime lifetime, bool? wait) =>
 {
     var alarm = request.Alarm ?? catalog.Scenarios.FirstOrDefault(s => s.Id == request.ScenarioId)?.Alarm;
     if (alarm is null) return Results.BadRequest(new { error = "Give a scenarioId of /api/scenarios, or an alarm." });
     var problem = ValidateAlarm(alarm);
     if (problem is not null) return Results.BadRequest(new { error = problem });
+    if (!guard.TryEnter(alarm.AlarmId))
+        return Results.Conflict(new { error = $"A run for alarm {alarm.AlarmId} is already in progress. Wait for it to finish." });
 
-    // The run is not tied to the browser connection: closing the page must not leave a half-booked incident behind.
-    var token = lifetime.ApplicationStopping;
-
-    if (wait == true)
+    try
     {
-        var summary = await runner.RunAsync(alarm, _ => ValueTask.CompletedTask, token);
-        log.Add(summary);
-        return Results.Ok(summary);
+        // The run is not tied to the browser connection: closing the page must not leave a half-booked incident behind.
+        var token = lifetime.ApplicationStopping;
+
+        if (wait == true)
+        {
+            var summary = await runner.RunAsync(alarm, _ => ValueTask.CompletedTask, token);
+            log.Add(summary);
+            return Results.Ok(summary);
+        }
+
+        context.Response.ContentType = "text/event-stream";
+        context.Response.Headers.CacheControl = "no-cache";
+        context.Response.Headers["X-Accel-Buffering"] = "no";
+        var clientGone = false;
+
+        async ValueTask Send(WorkflowEvent e)
+        {
+            if (clientGone) return;
+            try
+            {
+                await context.Response.WriteAsync($"event: {e.Type}\ndata: {JsonSerializer.Serialize(e, json)}\n\n", token);
+                await context.Response.Body.FlushAsync(token);
+            }
+            catch (Exception ex) when (ex is IOException or OperationCanceledException or ObjectDisposedException)
+            {
+                clientGone = true;
+            }
+        }
+
+        log.Add(await runner.RunAsync(alarm, Send, token));
+        return Results.Empty;
     }
-
-    context.Response.ContentType = "text/event-stream";
-    context.Response.Headers.CacheControl = "no-cache";
-    context.Response.Headers["X-Accel-Buffering"] = "no";
-    var clientGone = false;
-
-    async ValueTask Send(WorkflowEvent e)
+    finally
     {
-        if (clientGone) return;
-        try
-        {
-            await context.Response.WriteAsync($"event: {e.Type}\ndata: {JsonSerializer.Serialize(e, json)}\n\n", token);
-            await context.Response.Body.FlushAsync(token);
-        }
-        catch (Exception ex) when (ex is IOException or OperationCanceledException or ObjectDisposedException)
-        {
-            clientGone = true;
-        }
+        guard.Exit(alarm.AlarmId);
     }
-
-    log.Add(await runner.RunAsync(alarm, Send, token));
-    return Results.Empty;
 });
 
 app.Run();
@@ -75,6 +85,7 @@ app.Run();
 static string? ValidateAlarm(AnomalyAlarm alarm)
 {
     if (string.IsNullOrWhiteSpace(alarm.AlarmId)) return "alarmId is required.";
+    if (!IncidentIds.IsValidAlarmId(alarm.AlarmId)) return "alarmId must look like ALM-2026-1114-0001 (ALM- followed by letters, digits, '.', '_' or '-', at most 59 characters).";
     if (string.IsNullOrWhiteSpace(alarm.SensorId)) return "sensorId is required.";
     if (string.IsNullOrWhiteSpace(alarm.DistrictId)) return "districtId is required.";
     if (alarm.TriggeredAtUtc == default) return "triggeredAtUtc is required (ISO 8601 UTC).";
@@ -82,3 +93,5 @@ static string? ValidateAlarm(AnomalyAlarm alarm)
 }
 
 record RunRequest(string? ScenarioId, AnomalyAlarm? Alarm);
+
+public partial class Program;   // makes the entry point visible to the integration tests

@@ -100,12 +100,36 @@ public class DiagnosticAgent(LeakOpsAgentRuntime runtime, ILogger<DiagnosticAgen
             }))
             .GetProperty("ranking").Deserialize<List<SegmentDrop>>(Json)!;
 
-        var report = DiagnosticRules.Build(judgement, segment, valves, procedure, triage, drops);
+        var report = DiagnosticRules.Build(judgement, segment, valves, procedure, triage, drops, await MeasureAsync(segment, request.Alarm, Fact));
         if (report.NeedsReview)
             logger.LogWarning("Diagnosis for {AlarmId} needs review: {Reasons}", triage.AlarmId, string.Join(" | ", report.ReviewReasons));
         if (report.Warnings.Count > 0)
             logger.LogInformation("Diagnosis for {AlarmId} warnings: {Warnings}", triage.AlarmId, string.Join(" | ", report.Warnings));
 
         return new AgentResult<DiagnosticReport>(report, run.Trace with { ToolCalls = [.. run.Trace.ToolCalls, .. codeCalls] });
+    }
+
+    /// <summary>Runs the pressure-gradient locator and reads the inlet flow, so the position and the burst rule rest on measurements and not on the model's numbers.</summary>
+    private static async Task<DiagnosticFacts> MeasureAsync(PipeSegment segment, AnomalyAlarm alarm, Func<string, Dictionary<string, object?>, Task<JsonElement>> fact)
+    {
+        try
+        {
+            var estimate = await fact("estimate-leak-position", new()
+            {
+                ["segmentId"] = segment.Id,
+                ["untilUtc"] = LeakOpsTime.Utc(alarm.TriggeredAtUtc).ToString("yyyy-MM-ddTHH:mm:ssZ"),
+            });
+
+            double? excess = estimate.TryGetProperty("inletFlow", out var inlet) && inlet.ValueKind == JsonValueKind.Object
+                && inlet.TryGetProperty("excessOverExpectedM3h", out var e) && e.ValueKind == JsonValueKind.Number ? e.GetDouble() : null;
+            return estimate.TryGetProperty("found", out var found) && found.GetBoolean()
+                ? new DiagnosticFacts(estimate.GetProperty("estimatedChainageM").GetDouble(), estimate.GetProperty("uncertaintyM").GetDouble(), excess)
+                : new DiagnosticFacts(null, null, excess);
+        }
+        catch (InvalidOperationException)
+        {
+            // The tool answers with an error when no sensor on the segment has readings in the window: the position is then unknown.
+            return new DiagnosticFacts(null, null, null);
+        }
     }
 }
