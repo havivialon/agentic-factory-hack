@@ -3,6 +3,7 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <AzureFunctionsVersion>v4</AzureFunctionsVersion>
+    <NoWarn>$(NoWarn);AAIP001;OPENAI001;MEAI001</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>

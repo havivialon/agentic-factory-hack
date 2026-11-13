@@ -21,7 +21,7 @@ param modelDeploymentName string = 'gpt-5.4'
 param modelName string = 'gpt-5.4'
 param modelVersion string = '2026-03-05'
 @description('Global Standard capacity in thousands of tokens per minute. Pay per token, no fixed cost.')
-param modelCapacity int = 50
+param modelCapacity int = 150
 @description('B1 is about 11.80 EUR a month and keeps the apps loaded. F1 is free but sleeps when idle.')
 @allowed([ 'B1', 'F1' ])
 param webSku string = 'B1'
