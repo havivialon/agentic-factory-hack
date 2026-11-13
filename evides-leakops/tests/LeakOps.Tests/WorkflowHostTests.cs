@@ -6,6 +6,7 @@ using System.Text;
 using System.Text.Json;
 using LeakOps.Contracts;
 using LeakOps.Seeder;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
@@ -155,6 +156,37 @@ public class WorkflowHostTests
 
         // Once the first run is over the alarm can be run again.
         Assert.Equal(HttpStatusCode.OK, (await client.PostAsync("/api/runs?wait=true", Json(new { scenarioId = Burst.Id }))).StatusCode);
+    }
+
+    [Fact]
+    public async Task When_an_operator_key_is_configured_the_workflow_api_refuses_calls_without_it()
+    {
+        using var factory = HostWith(WorkflowRunnerTests.FakeGateway.Happy()).WithWebHostBuilder(b => b.UseSetting("OPERATOR_KEY", "s3cret"));
+        var client = factory.CreateClient();
+
+        Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/scenarios")).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsync("/api/runs?wait=true", Json(new { scenarioId = Burst.Id }))).StatusCode);
+
+        // The page, the health check and the config (which says a key is needed) stay open, so the console can ask for the key.
+        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/health")).StatusCode);
+        Assert.Contains("\"keyRequired\":true", await client.GetStringAsync("/api/config"));
+
+        client.DefaultRequestHeaders.Add("X-Operator-Key", "wrong");
+        Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("/api/scenarios")).StatusCode);
+
+        client.DefaultRequestHeaders.Remove("X-Operator-Key");
+        client.DefaultRequestHeaders.Add("X-Operator-Key", "s3cret");
+        Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/api/scenarios")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await client.PostAsync("/api/runs?wait=true", Json(new { scenarioId = Burst.Id }))).StatusCode);
+    }
+
+    [Fact]
+    public void Outside_development_the_host_refuses_to_start_without_an_operator_key()
+    {
+        using var factory = HostWith(WorkflowRunnerTests.FakeGateway.Happy()).WithWebHostBuilder(b => b.UseEnvironment("Production"));
+
+        Assert.Throws<InvalidOperationException>(() => factory.CreateClient());
     }
 
     [Fact]

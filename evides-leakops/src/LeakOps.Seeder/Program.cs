@@ -97,7 +97,7 @@ await Upsert(LeakOpsContainers.Scenarios, data.Scenarios, s => s.Id);
 
 if (resetRuntime)
 {
-    foreach (var name in new[] { LeakOpsContainers.Incidents, LeakOpsContainers.WorkOrders, LeakOpsContainers.PurchaseOrders, LeakOpsContainers.StockReservations })
+    foreach (var name in new[] { LeakOpsContainers.Incidents, LeakOpsContainers.WorkOrders, LeakOpsContainers.PurchaseOrders, LeakOpsContainers.StockReservations, LeakOpsContainers.WaterstoringIncidents })
         await ClearContainer(name);
 }
 

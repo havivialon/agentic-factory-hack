@@ -155,7 +155,8 @@ async function run() {
   $("banner").hidden = true;
   buildSteps();
   try {
-    const response = await fetch("api/runs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ alarm }) });
+    const response = await fetch("api/runs", { method: "POST", headers: authHeaders({ "Content-Type": "application/json" }), body: JSON.stringify({ alarm }) });
+    if (response.status === 401) { $("key-row").hidden = false; throw new Error("The operator key is missing or wrong. Enter it above and run again."); }
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
       throw new Error(body.error || `The workflow host answered ${response.status}.`);
@@ -178,7 +179,9 @@ function pickScenario(scenario, button) {
 }
 
 async function loadScenarios() {
-  const scenarios = await (await fetch("api/scenarios")).json();
+  const response = await fetch("api/scenarios", { headers: authHeaders() });
+  if (response.status === 401) { $("key-row").hidden = false; return; }
+  const scenarios = await response.json();
   const box = $("scenarios");
   box.replaceChildren();
   scenarios.forEach((scenario, i) => {
@@ -192,7 +195,9 @@ async function loadScenarios() {
 }
 
 async function loadRecent() {
-  const runs = await (await fetch("api/runs")).json();
+  const response = await fetch("api/runs", { headers: authHeaders() });
+  if (!response.ok) return;
+  const runs = await response.json();
   const list = $("recent");
   list.replaceChildren();
   if (!runs.length) return list.append(el("li", { class: "muted" }, "None yet."));
@@ -205,11 +210,29 @@ async function loadConfig() {
   try {
     const config = await (await fetch("api/config")).json();
     $("site-link").href = config.waterstoringUrl;
+    // On Azure the API needs an operator key. It is kept in this browser tab only (sessionStorage), never in the page.
+    if (config.keyRequired) {
+      $("key-row").hidden = false;
+      $("operator-key").value = sessionStorage.getItem("operatorKey") || "";
+    }
   } catch { /* keep the default link */ }
+}
+
+function authHeaders(extra = {}) {
+  const key = sessionStorage.getItem("operatorKey");
+  return key ? { ...extra, "X-Operator-Key": key } : extra;
+}
+
+function start() {
+  loadScenarios().catch((e) => showError("Could not load the scenarios: " + e.message));
+  loadRecent();
 }
 
 buildSteps();
 $("run").addEventListener("click", run);
-loadScenarios().catch((e) => showError("Could not load the scenarios: " + e.message));
-loadRecent();
-loadConfig();
+$("operator-key").addEventListener("change", () => {
+  sessionStorage.setItem("operatorKey", $("operator-key").value.trim());
+  $("run-error").hidden = true;
+  start();
+});
+loadConfig().then(start);

@@ -3,6 +3,10 @@
   <!-- ASP.NET workflow host: runs the six agents in order, streams progress (SSE) and serves the operator page. -->
 
   <ItemGroup>
+    <PackageReference Include="Azure.Monitor.OpenTelemetry.AspNetCore" Version="1.6.0" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\LeakOps.Contracts\LeakOps.Contracts.csproj" />
   </ItemGroup>
 

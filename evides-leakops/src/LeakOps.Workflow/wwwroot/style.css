@@ -47,6 +47,9 @@ h3 { margin: 22px 0 8px; font-size: 14px; color: var(--muted); text-transform: u
 textarea { width: 100%; border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; font: 12.5px/1.45 ui-monospace, "Cascadia Mono", Consolas, monospace; background: #fbfdfe; resize: vertical; color: var(--ink); }
 textarea:focus, button:focus-visible, .scenario:focus-visible, summary:focus-visible, a:focus-visible { outline: 3px solid #7cc4d6; outline-offset: 2px; }
 .hint { font-size: 13px; color: var(--muted); margin: 8px 0 16px; }
+.key-row { margin-bottom: 4px; }
+.key-row input { width: 100%; border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; font: inherit; background: #fbfdfe; color: var(--ink); }
+.key-row input:focus { outline: 3px solid #7cc4d6; outline-offset: 2px; }
 .primary { width: 100%; border: 0; border-radius: 999px; background: var(--teal); color: #fff; font-weight: 700; font-size: 16px; font-family: inherit; padding: 13px 18px; cursor: pointer; }
 .primary:hover:not(:disabled) { background: var(--teal-dark); }
 .primary:disabled { opacity: .55; cursor: not-allowed; }

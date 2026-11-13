@@ -28,6 +28,12 @@
       <textarea id="alarm" spellcheck="false" rows="13"></textarea>
       <p class="hint">This is what the SCADA system sends. You can edit it, for example to see how the agents deal with a sensor they do not know or with odd text in the message.</p>
 
+      <div id="key-row" class="key-row" hidden>
+        <label class="field-label" for="operator-key">Operator key</label>
+        <input id="operator-key" type="password" autocomplete="off" spellcheck="false">
+        <p class="hint">This deployment is protected. Enter the key once; it is kept in this browser tab only.</p>
+      </div>
+
       <button id="run" class="primary" type="button" disabled>Run the workflow</button>
       <p id="run-error" class="error" role="alert" hidden></p>
 

@@ -7,6 +7,7 @@
 // Usage: dotnet run evides-leakops/scripts/e2e.cs
 //   WORKFLOW_URL (http://localhost:5090)  WATERSTORING_URL (http://localhost:5080)  AGENTS_URL (http://localhost:7072)
 //   WATERSTORING_API_KEY (dev-waterstoring-key)
+//   OPERATOR_KEY and AGENTS_FUNCTION_KEY: only for a deployment in Azure (deploy.ps1 -RunE2E sets all of these)
 // It calls the real model, so it takes a few minutes and uses tokens. It writes to Cosmos and to the fake Waterstoring site, and it
 // clears that site first. Exit code 0 = every check passed.
 
@@ -22,6 +23,9 @@ var site = new Uri(Env("WATERSTORING_URL", "http://localhost:5080"));
 var agents = new Uri(Env("AGENTS_URL", "http://localhost:7072"));
 var siteKey = Env("WATERSTORING_API_KEY", "dev-waterstoring-key");
 using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(6) };
+// On Azure the apps need keys: the operator key for the workflow API and the function key for the agents. Harmless on a laptop.
+if (Env("OPERATOR_KEY", "") is { Length: > 0 } operatorKey) http.DefaultRequestHeaders.Add("X-Operator-Key", operatorKey);
+if (Env("AGENTS_FUNCTION_KEY", "") is { Length: > 0 } agentsKey) http.DefaultRequestHeaders.Add("x-functions-key", agentsKey);
 
 int passed = 0, failed = 0;
 var clock = Stopwatch.StartNew();
@@ -98,6 +102,9 @@ Check(((JsonArray)await GetJson(new Uri(site, "/api/incidents"))).Count == 0, "n
 Section("2. Burst on a cast-iron main");
 var run = await RunWorkflow(burst["alarm"]!);
 Check(run.Outcome == "completed", $"all six agents finish ({run.Outcome}, {run.Elapsed.TotalSeconds:0} s)");
+var tokensIn = run.Events.Where(e => e["type"]!.GetValue<string>() == "step_completed").Sum(e => e["data"]?["trace"]?["inputTokens"]?.GetValue<long>() ?? 0);
+var tokensOut = run.Events.Where(e => e["type"]!.GetValue<string>() == "step_completed").Sum(e => e["data"]?["trace"]?["outputTokens"]?.GetValue<long>() ?? 0);
+Console.WriteLine($"   info model use of one full run: {tokensIn:N0} tokens in, {tokensOut:N0} tokens out");
 Check(run.Steps.SequenceEqual(["triage", "diagnostic", "communications", "matchmaker", "procurement", "scheduling"]), "in the planned order");
 
 var triage = run.Result("triage");
@@ -194,6 +201,12 @@ var (wrongKey, _) = await Send(HttpMethod.Post, new Uri(site, "/api/incidents"),
 Check(noKey == HttpStatusCode.Unauthorized && wrongKey == HttpStatusCode.Unauthorized, "the Waterstoring ingest API refuses calls without the right key (401)");
 Check((await http.GetAsync(new Uri(site, "/api/incidents"))).IsSuccessStatusCode, "while residents can read it without a key");
 Check(!(await http.GetStringAsync(new Uri(workflow, "/api/scenarios"))).Contains("groundTruth", StringComparison.OrdinalIgnoreCase), "the operator page is never given the simulation's hidden answers");
+if (Env("OPERATOR_KEY", "").Length > 0)
+{
+    using var anonymous = new HttpClient();
+    Check((await anonymous.GetAsync(new Uri(workflow, "/api/scenarios"))).StatusCode == HttpStatusCode.Unauthorized, "the workflow API refuses calls without the operator key (401)");
+    Check((await anonymous.PostAsync(new Uri(agents, "/api/agents/triage"), new StringContent("{}", Encoding.UTF8, "application/json"))).StatusCode == HttpStatusCode.Unauthorized, "the agents refuse calls without the function key (401)");
+}
 
 Console.WriteLine($"\n{passed} passed, {failed} failed ({clock.Elapsed.TotalMinutes:0.0} min). Clear the runtime data again with: dotnet run --project evides-leakops/src/LeakOps.Seeder -- --reset-runtime");
 return failed == 0 ? 0 : 1;

@@ -26,6 +26,9 @@ public static class LeakOpsContainers
     public const string PurchaseOrders = "PurchaseOrders";
     public const string StockReservations = "StockReservations";
 
+    // The public incidents of the (fake) Waterstoring site when it runs in Azure.
+    public const string WaterstoringIncidents = "WaterstoringIncidents";
+
     public static readonly IReadOnlyDictionary<string, string> PartitionKeyPaths = new Dictionary<string, string>
     {
         [Sensors] = "/districtId",
@@ -46,5 +49,6 @@ public static class LeakOpsContainers
         [WorkOrders] = "/incidentId",
         [PurchaseOrders] = "/incidentId",
         [StockReservations] = "/incidentId",
+        [WaterstoringIncidents] = "/id",
     };
 }

@@ -1,14 +1,22 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using Azure.Identity;
+using Azure.Monitor.OpenTelemetry.AspNetCore;
 using LeakOps.Contracts;
 using LeakOps.Waterstoring;
+using Microsoft.Azure.Cosmos;
 
 // Fake Waterstoring.nl: a public page where residents look up disruptions, plus an API-key protected ingest API
 // that the Communications and Scheduling agents call. This is a demo, not the real waterstoring.nl.
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton<IIncidentRepository>(sp => CreateRepository(sp.GetRequiredService<IConfiguration>()));
 builder.Services.AddSingleton<IncidentStore>();
+
+// Telemetry goes to Application Insights when the app runs in Azure (the connection string is an app setting there).
+if (!string.IsNullOrWhiteSpace(builder.Configuration["APPLICATIONINSIGHTS_CONNECTION_STRING"]))
+    builder.Services.AddOpenTelemetry().UseAzureMonitor();
 
 var app = builder.Build();
 
@@ -25,44 +33,44 @@ app.MapGet("/evides", (IWebHostEnvironment env) => Results.File(Path.Combine(env
 
 // ---- Public, read-only ------------------------------------------------------------------------------------------
 
-app.MapGet("/api/incidents", (IncidentStore store, bool? active) => Results.Ok(store.List(active ?? false)));
+app.MapGet("/api/incidents", async (IncidentStore store, bool? active) => Results.Ok(await store.ListAsync(active ?? false)));
 
-app.MapGet("/api/incidents/{id}", (string id, IncidentStore store) =>
-    store.Get(id) is { } incident ? Results.Ok(incident) : Results.NotFound());
+app.MapGet("/api/incidents/{id}", async (string id, IncidentStore store) =>
+    await store.GetAsync(id) is { } incident ? Results.Ok(incident) : Results.NotFound());
 
-app.MapGet("/api/search", (IncidentStore store, string? q) =>
+app.MapGet("/api/search", async (IncidentStore store, string? q) =>
 {
-    var incidents = store.Search(q);
+    var incidents = await store.SearchAsync(q);
     return Results.Ok(new { query = q, hasIncident = incidents.Count > 0, incidents });
 });
 
 // ---- Protected: header "X-Api-Key" ------------------------------------------------------------------------------
 
-app.MapPost("/api/incidents", (WaterstoringIncidentRequest request, IncidentStore store, ILogger<Program> logger) =>
+app.MapPost("/api/incidents", async (WaterstoringIncidentRequest request, IncidentStore store, ILogger<Program> logger) =>
 {
     var errors = Validate(request);
     if (errors.Count > 0) return Results.ValidationProblem(errors);
 
-    var (incident, created) = store.Upsert(request);
+    var (incident, created) = await store.UpsertAsync(request);
     logger.LogInformation("Incident {IncidentId} {Action} with status {Status}", incident.IncidentId, created ? "created" : "replaced", incident.Status);
     return created ? Results.Created($"/api/incidents/{incident.IncidentId}", incident) : Results.Ok(incident);
 }).AddEndpointFilter(RequireApiKey);
 
-app.MapPatch("/api/incidents/{id}", (string id, WaterstoringIncidentUpdate update, IncidentStore store, ILogger<Program> logger) =>
+app.MapPatch("/api/incidents/{id}", async (string id, WaterstoringIncidentUpdate update, IncidentStore store, ILogger<Program> logger) =>
 {
     if (update.Status is not null && !WaterstoringStatus.IsValid(update.Status))
         return Results.ValidationProblem(new Dictionary<string, string[]> { ["status"] = [$"Must be one of: {string.Join(", ", WaterstoringStatus.All)}"] });
 
-    var incident = store.Update(id, update);
+    var incident = await store.UpdateAsync(id, update);
     if (incident is null) return Results.NotFound();
 
     logger.LogInformation("Incident {IncidentId} updated: status {Status}, expected resolution {Eta}", id, incident.Status, incident.ExpectedResolutionUtc);
     return Results.Ok(incident);
 }).AddEndpointFilter(RequireApiKey);
 
-app.MapPost("/api/admin/reset", (IncidentStore store) =>
+app.MapPost("/api/admin/reset", async (IncidentStore store) =>
 {
-    store.Clear();
+    await store.ClearAsync();
     return Results.NoContent();
 }).AddEndpointFilter(RequireApiKey);
 
@@ -75,6 +83,27 @@ async ValueTask<object?> RequireApiKey(EndpointFilterInvocationContext context, 
     // FixedTimeEquals compares without leaking, through timing, how many characters matched.
     var valid = CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(supplied), Encoding.UTF8.GetBytes(apiKey!));
     return valid ? await next(context) : Results.Json(new { error = "Missing or invalid X-Api-Key header." }, statusCode: StatusCodes.Status401Unauthorized);
+}
+
+// Incidents live in memory on a laptop. In Azure the app setting WATERSTORING_STORE=cosmos keeps them in the LeakOps Cosmos database,
+// so a restart or a new deployment does not empty the page. In Azure the app's managed identity is used; locally a COSMOS_KEY works too.
+static IIncidentRepository CreateRepository(IConfiguration config)
+{
+    if (!string.Equals(config["WATERSTORING_STORE"], "cosmos", StringComparison.OrdinalIgnoreCase)) return new InMemoryIncidentRepository();
+
+    var endpoint = config["COSMOS_ENDPOINT"] ?? throw new InvalidOperationException("COSMOS_ENDPOINT is required when WATERSTORING_STORE is 'cosmos'.");
+    var database = config["COSMOS_DATABASE_NAME"] ?? LeakOpsContainers.DefaultDatabase;
+    if (!database.StartsWith("LeakOps", StringComparison.OrdinalIgnoreCase))
+        throw new InvalidOperationException($"COSMOS_DATABASE_NAME is '{database}', but Waterstoring only uses databases named LeakOps*.");
+
+    var options = new CosmosClientOptions
+    {
+        ApplicationName = "leakops-waterstoring",
+        SerializerOptions = new CosmosSerializationOptions { PropertyNamingPolicy = CosmosPropertyNamingPolicy.CamelCase },
+    };
+    var key = config["COSMOS_KEY"];
+    var client = string.IsNullOrWhiteSpace(key) ? new CosmosClient(endpoint, new DefaultAzureCredential(), options) : new CosmosClient(endpoint, key, options);
+    return new CosmosIncidentRepository(client.GetContainer(database, LeakOpsContainers.WaterstoringIncidents));
 }
 
 static Dictionary<string, string[]> Validate(WaterstoringIncidentRequest r)

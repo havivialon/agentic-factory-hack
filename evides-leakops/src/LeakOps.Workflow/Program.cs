@@ -1,4 +1,7 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
+using Azure.Monitor.OpenTelemetry.AspNetCore;
 using LeakOps.Contracts;
 using LeakOps.Contracts.Logic;
 using LeakOps.Workflow;
@@ -15,14 +18,40 @@ builder.Services.AddSingleton<RunGuard>();
 builder.Services.AddHttpClient<IAgentGateway, AgentGateway>(client => client.Timeout = TimeSpan.FromMinutes(5));
 builder.Services.AddTransient<WorkflowRunner>();
 
+// Telemetry goes to Application Insights when the app runs in Azure (the connection string is an app setting there).
+if (!string.IsNullOrWhiteSpace(builder.Configuration["APPLICATIONINSIGHTS_CONNECTION_STRING"]))
+    builder.Services.AddOpenTelemetry().UseAzureMonitor();
+
 var app = builder.Build();
 var json = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+
+// Starting a workflow publishes to residents and books people and stock, so outside Development the API needs the operator key.
+var operatorKey = app.Configuration["OPERATOR_KEY"];
+if (string.IsNullOrWhiteSpace(operatorKey) && !app.Environment.IsDevelopment())
+    throw new InvalidOperationException("OPERATOR_KEY is required outside Development.");
+
+app.Use(async (context, next) =>
+{
+    var path = context.Request.Path;
+    if (!string.IsNullOrWhiteSpace(operatorKey) && path.StartsWithSegments("/api") && !path.StartsWithSegments("/api/config"))
+    {
+        var supplied = context.Request.Headers["X-Operator-Key"].ToString();
+        // FixedTimeEquals compares without leaking, through timing, how many characters matched.
+        if (!CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(supplied), Encoding.UTF8.GetBytes(operatorKey)))
+        {
+            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            await context.Response.WriteAsJsonAsync(new { error = "Missing or invalid X-Operator-Key header." });
+            return;
+        }
+    }
+    await next();
+});
 
 app.UseDefaultFiles();
 app.UseStaticFiles();
 
 app.MapGet("/health", () => Results.Ok(new { status = "Healthy", service = "workflow" }));
-app.MapGet("/api/config", (WorkflowSettings settings) => Results.Ok(new { waterstoringUrl = settings.WaterstoringPublicUrl }));
+app.MapGet("/api/config", (WorkflowSettings settings) => Results.Ok(new { waterstoringUrl = settings.WaterstoringPublicUrl, keyRequired = !string.IsNullOrWhiteSpace(operatorKey) }));
 app.MapGet("/api/scenarios", (ScenarioCatalog catalog) => Results.Ok(catalog.Scenarios));
 app.MapGet("/api/runs", (RunLog log) => Results.Ok(log.Recent()));
 app.MapGet("/api/runs/{runId}", (string runId, RunLog log) => log.Find(runId) is { } run ? Results.Ok(run) : Results.NotFound());
