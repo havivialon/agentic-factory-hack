@@ -1,39 +1,43 @@
 <#
 .SYNOPSIS
-  Deploys Evides LeakOps to Azure (the existing resource group of the Visual Studio subscription) and checks that it works.
+  Deploys the Evides LeakOps demo to its own resource group in Azure and checks that it works.
 
 .DESCRIPTION
-  1. Creates the Cosmos container for the public incidents and deploys deploy/main.bicep (what-if first). New resources:
-     two Flex Consumption function apps (MCP tools, agents), one Basic App Service plan with two web apps (fake Waterstoring.nl,
-     workflow host with the operator console), and the role assignments between them. It reuses the existing Cosmos DB, storage
-     account, Application Insights and Foundry project. Every new resource is tagged project=evides-leakops.
-  2. Publishes the code of the four apps.
-  3. Makes sure the two function keys exist, so the agents can call the MCP tools and the workflow host can call the agents.
-  4. Checks the health of all four apps.
+  1. Creates the resource group and deploys deploy/main.bicep (what-if first). Everything is new and separate from other demos:
+     Microsoft Foundry (resource, project, gpt-5.4 deployment, tracing and the MCP connection), Cosmos DB (serverless), storage,
+     Log Analytics, Application Insights, two Flex Consumption function apps (MCP tools, agents), one Basic App Service plan with
+     two web apps (fake Waterstoring.nl, workflow host with the operator console) and the role assignments between them.
+     Every resource is tagged project=evides-leakops.
+  2. Seeds the simulated data into the new Cosmos DB (the key is read for this run only and never written to disk).
+  3. Publishes the code of the four apps.
+  4. Makes sure the two function keys exist, so Foundry and the agents can call the MCP tools and the workflow host can call the agents.
+  5. Checks the health of all four apps.
 
   It is safe to run again: keys that already exist are kept, so nothing has to be re-entered. Nothing secret is written to a file;
   keys live only in the app settings of the apps (and in this script's memory while it runs).
 
-  Cost: about 11.80 EUR a month for the web plan (B1), about 0 EUR for the two function apps (free monthly grant), plus a few cents
-  per workflow run for the model. Run deploy/scale-web.ps1 -Sku F1 to drop the web plan to free when you are not demoing.
+  Cost: about 11.80 EUR a month for the web plan (B1), about 0 EUR for the two function apps (free monthly grant) and for Cosmos
+  serverless at this scale, plus a few cents per workflow run for the model. Run deploy/scale-web.ps1 -Sku F1 to drop the web plan to
+  free when you are not demoing. deploy/teardown.ps1 deletes everything.
 
 .EXAMPLE
   $env:AZURE_CONFIG_DIR = "$HOME\.azure-macaw"     # only when your Azure CLI default login is another tenant, see the README
-  ./evides-leakops/deploy/deploy.ps1 -WhatIfOnly   # show what would be created and stop
+  ./evides-leakops/deploy/deploy.ps1 -WhatIfOnly   # show what would be created and stop (the empty resource group is created)
   ./evides-leakops/deploy/deploy.ps1               # deploy
-  ./evides-leakops/deploy/deploy.ps1 -SkipPublish  # only the infrastructure
+  ./evides-leakops/deploy/deploy.ps1 -SkipPublish  # only the infrastructure and the data
   ./evides-leakops/deploy/deploy.ps1 -WebLocation northeurope   # when the Basic plan has no capacity in the default region
 #>
 #requires -Version 7.0
 [CmdletBinding()]
 param(
     [string] $SubscriptionId = 'a39be7cd-9ae9-42cf-b42f-dc6e45a82464',
-    [string] $ResourceGroup = 'rg-tire-factory-demo',
-    [string] $Suffix = 'lfp4hhftznza4',
+    [string] $ResourceGroup = 'rg-evides-ai-demo',
+    [string] $Location = 'swedencentral',
     [ValidateSet('B1', 'F1')] [string] $WebSku = 'B1',
     [string] $WebLocation = 'westeurope',
     [switch] $WhatIfOnly,
     [switch] $SkipPublish,
+    [switch] $SkipSeed,
     [switch] $RunE2E
 )
 
@@ -41,6 +45,9 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $root = Split-Path -Parent $PSScriptRoot          # evides-leakops
+# Names that must be unique worldwide get this suffix: 6 hex characters derived from the subscription and resource group, so it is
+# the same on every run and different for every environment.
+$Suffix = (([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes("$SubscriptionId/$ResourceGroup")) | ForEach-Object { $_.ToString('x2') }) -join '').Substring(0, 6)
 $names = @{
     Mcp          = "leakops-mcp-$Suffix"
     Agents       = "leakops-agents-$Suffix"
@@ -90,7 +97,13 @@ function Wait-Until([string] $what, [scriptblock] $test, [int] $seconds = 240) {
 Write-Host "== Evides LeakOps deployment" -ForegroundColor Cyan
 $account = Az account show --subscription $SubscriptionId -o json | ConvertFrom-Json
 Write-Host "   subscription: $($account.name)  tenant: $($account.tenantId)  user: $($account.user.name)"
-Write-Host "   resource group: $ResourceGroup   web plan: $WebSku"
+Write-Host "   resource group: $ResourceGroup ($Location)   suffix: $Suffix   web plan: $WebSku ($WebLocation)"
+
+Az group create --subscription $SubscriptionId -n $ResourceGroup -l $Location --tags project=evides-leakops demo=evides-ai-foundry -o none | Out-Null
+
+# The person running this script gets the Foundry User role, so the agents can be created and tried in the portal afterwards.
+$deployerId = (& $azExe ad signed-in-user show --query id -o tsv 2>$null | Out-String).Trim()
+if (-not $deployerId) { Write-Warning 'Could not read your user id: you will have to give yourself the "Foundry User" role on the Foundry resource.' }
 
 # Keys that already exist are kept (they were read from the app settings), so running this again changes nothing.
 $waterstoringApiKey = Get-AppSetting webapp $names.Waterstoring 'WATERSTORING_API_KEY'
@@ -109,13 +122,15 @@ $parameters = Join-Path ([IO.Path]::GetTempPath()) "leakops-params-$([guid]::New
     '$schema'      = 'https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#'
     contentVersion = '1.0.0.0'
     parameters     = @{
-        suffix             = @{ value = $Suffix }
-        webSku             = @{ value = $WebSku }
-        webLocation        = @{ value = $WebLocation }
-        waterstoringApiKey = @{ value = $waterstoringApiKey }
-        operatorKey        = @{ value = $operatorKey }
-        mcpKey             = @{ value = $mcpKey }
-        agentsKey          = @{ value = $agentsKey }
+        suffix              = @{ value = $Suffix }
+        location            = @{ value = $Location }
+        webSku              = @{ value = $WebSku }
+        webLocation         = @{ value = $WebLocation }
+        deployerPrincipalId = @{ value = $deployerId }
+        waterstoringApiKey  = @{ value = $waterstoringApiKey }
+        operatorKey         = @{ value = $operatorKey }
+        mcpKey              = @{ value = $mcpKey }
+        agentsKey           = @{ value = $agentsKey }
     }
 } | ConvertTo-Json -Depth 5 | Set-Content -Path $parameters -Encoding utf8
 
@@ -123,11 +138,7 @@ try {
     Write-Host "`n== 1. Infrastructure" -ForegroundColor Cyan
     $whatIf = Az deployment group what-if --subscription $SubscriptionId -g $ResourceGroup --template-file $template --parameters "@$parameters" --only-show-errors
     ($whatIf | Out-String) -split "`n" | Where-Object { $_ -match '^\s*\+ Microsoft|Resource changes' } | ForEach-Object { Write-Host "   $($_.Trim())" }
-    if ($WhatIfOnly) { Write-Host "`nWhat-if only: nothing was changed."; return }
-
-    # Container for the public incidents of the fake Waterstoring site (a control-plane call: no keys needed).
-    Az cosmosdb sql container create --subscription $SubscriptionId -g $ResourceGroup -a "msagthack-cosmos-$Suffix" -d LeakOpsDB -n WaterstoringIncidents --partition-key-path /id -o none | Out-Null
-    Write-Host "   ok   Cosmos container WaterstoringIncidents"
+    if ($WhatIfOnly) { Write-Host "`nWhat-if only: no resources were created (only the empty resource group)."; return }
 
     $outputs = (Az deployment group create --subscription $SubscriptionId -g $ResourceGroup --template-file $template --parameters "@$parameters" --only-show-errors --query properties.outputs -o json | Out-String | ConvertFrom-Json)
     Write-Host "   ok   resources deployed"
@@ -143,8 +154,25 @@ $url = @{
     Workflow     = $outputs.workflowUrl.value
 }
 
+if (-not $SkipSeed) {
+    Write-Host "`n== 2. Simulated data" -ForegroundColor Cyan
+    # The seeder creates the database and containers and loads the simulated network, sensors, stock and scenarios.
+    # The Cosmos key is read for this run only: it goes into this process's environment, not into a file.
+    $cosmosKey = (Az cosmosdb keys list --subscription $SubscriptionId -g $ResourceGroup -n $outputs.cosmosAccount.value --query primaryMasterKey -o tsv | Out-String).Trim()
+    $env:COSMOS_ENDPOINT = $outputs.cosmosEndpoint.value
+    $env:COSMOS_KEY = $cosmosKey
+    try {
+        & dotnet run --project (Join-Path $root 'src/LeakOps.Seeder') -c Release -- --reset-runtime
+        if ($LASTEXITCODE -ne 0) { throw 'Seeding failed.' }
+    }
+    finally {
+        Remove-Item Env:COSMOS_KEY -ErrorAction SilentlyContinue
+        Remove-Item Env:COSMOS_ENDPOINT -ErrorAction SilentlyContinue
+    }
+}
+
 if (-not $SkipPublish) {
-    Write-Host "`n== 2. Publish the code" -ForegroundColor Cyan
+    Write-Host "`n== 3. Publish the code" -ForegroundColor Cyan
     $work = Join-Path ([IO.Path]::GetTempPath()) "leakops-publish-$([guid]::NewGuid().ToString('N'))"
     New-Item -ItemType Directory -Path $work | Out-Null
     try {
@@ -173,7 +201,7 @@ if (-not $SkipPublish) {
         Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
     }
 
-    Write-Host "`n== 3. Function keys" -ForegroundColor Cyan
+    Write-Host "`n== 4. Function keys" -ForegroundColor Cyan
     # The agents send the mcp_extension system key to the MCP app; the workflow host sends a function key to the agents app.
     # Both values were passed to Bicep (they are in the app settings); here the function hosts are told to accept the same values.
     Wait-Until 'MCP function host is up' { (Invoke-WebRequest "$($url.Mcp)/runtime/webhooks/mcp" -SkipHttpErrorCheck -UseBasicParsing -TimeoutSec 20).StatusCode -in 200, 401, 405 }
@@ -182,7 +210,7 @@ if (-not $SkipPublish) {
     Wait-Until 'agents function key set' { Az functionapp keys set --subscription $SubscriptionId -g $ResourceGroup -n $names.Agents --key-type functionKeys --key-name leakops-workflow --key-value $agentsKey -o none; $true }
 }
 
-Write-Host "`n== 4. Health" -ForegroundColor Cyan
+Write-Host "`n== 5. Health" -ForegroundColor Cyan
 Wait-Until 'waterstoring' { (Invoke-WebRequest "$($url.Waterstoring)/health" -UseBasicParsing -TimeoutSec 20).StatusCode -eq 200 }
 Wait-Until 'workflow host' { (Invoke-WebRequest "$($url.Workflow)/health" -UseBasicParsing -TimeoutSec 20).StatusCode -eq 200 }
 Wait-Until 'agents (with the function key)' { (Invoke-WebRequest "$($url.Agents)/api/health" -Headers @{ 'x-functions-key' = $agentsKey } -UseBasicParsing -TimeoutSec 30).StatusCode -eq 200 }
@@ -193,6 +221,7 @@ Wait-Until 'workflow API accepts the operator key' { (Invoke-WebRequest "$($url.
 Write-Host "`n== Done" -ForegroundColor Green
 Write-Host "   Operator console   $($url.Workflow)"
 Write-Host "   What residents see $($url.Waterstoring)/evides"
+Write-Host "   Foundry project    $($outputs.foundryProjectEndpoint.value)   (open it in https://ai.azure.com, project 'evides-leakops')"
 if ($newOperatorKey) {
     Write-Host "   Operator key       $operatorKey   (shown once; keep it safe. Show it again with: az webapp config appsettings list -g $ResourceGroup -n $($names.Workflow) --query ""[?name=='OPERATOR_KEY'].value"" -o tsv)"
 }

@@ -7,7 +7,7 @@ using Microsoft.Azure.Cosmos;
 //   --reset           delete the database first (only allowed for a database named like LeakOps*)
 //   --reset-runtime   after seeding, also empty the run-time containers (incidents, work orders, purchase orders, reservations).
 //                     Seeding itself already puts the stock reservations back to zero, so this gives a clean demo state.
-// Connection settings come from COSMOS_ENDPOINT and COSMOS_KEY (environment variables or the repo-root .env file).
+// Connection settings come from COSMOS_ENDPOINT and COSMOS_KEY (environment variables, which win, or the repo-root .env file).
 // C# note: this file uses "top-level statements" - no Main method or class needed (like a Python script).
 
 var dryRun = args.Contains("--dry-run");
@@ -52,7 +52,8 @@ if (dryRun)
     return 0;
 }
 
-try { DotNetEnv.Env.TraversePath().Load(); } catch (FileNotFoundException) { /* no .env file: rely on real environment variables */ }
+// NoClobber: variables that are already set (for example by deploy.ps1 for a new deployment) win over the repo-root .env.
+try { DotNetEnv.Env.NoClobber().TraversePath().Load(); } catch (FileNotFoundException) { /* no .env file: rely on real environment variables */ }
 var endpoint = Environment.GetEnvironmentVariable("COSMOS_ENDPOINT");
 var key = Environment.GetEnvironmentVariable("COSMOS_KEY");
 if (string.IsNullOrWhiteSpace(endpoint) || string.IsNullOrWhiteSpace(key))

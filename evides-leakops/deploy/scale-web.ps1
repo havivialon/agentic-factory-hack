@@ -15,11 +15,12 @@
 param(
     [Parameter(Mandatory)] [ValidateSet('B1', 'F1')] [string] $Sku,
     [string] $SubscriptionId = 'a39be7cd-9ae9-42cf-b42f-dc6e45a82464',
-    [string] $ResourceGroup = 'rg-tire-factory-demo',
-    [string] $Suffix = 'lfp4hhftznza4'
+    [string] $ResourceGroup = 'rg-evides-ai-demo'
 )
 
 $ErrorActionPreference = 'Stop'
+# The same suffix deploy.ps1 derived from the subscription and resource group.
+$Suffix = (([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes("$SubscriptionId/$ResourceGroup")) | ForEach-Object { $_.ToString('x2') }) -join '').Substring(0, 6)
 $plan = "leakops-web-plan-$Suffix"
 $apps = "leakops-waterstoring-$Suffix", "leakops-workflow-$Suffix"
 
